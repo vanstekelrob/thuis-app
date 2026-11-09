@@ -33,12 +33,12 @@ jobs:
         run: |
           for f in supabase/migrations/*.sql; do
             echo "→ $f"
-            jq -Rs '{query: .}' "$f" | curl --fail-with-body -sS -o /dev/null -X POST "$API/database/query" \
+            jq -Rs '{query: .}' "$f" | curl --fail-with-body -sS -X POST "$API/database/query" \
               -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" --data-binary @-
           done
       - name: Anonieme login aanzetten
         run: |
-          curl --fail-with-body -sS -o /dev/null -X PATCH "$API/config/auth" \
+          curl --fail-with-body -sS -X PATCH "$API/config/auth" \
             -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
             -d '{"external_anonymous_users_enabled": true}'
       - uses: supabase/setup-cli@v3
