@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-09T23:45:00+01:00",
+  "title": "Design System: V70",
+  "extensions": {
+    "colorMeta": {
+      "bordeaux-gloss": { "role": "primary", "displayName": "Glanzend bordeaux", "canonical": "#8E1B35", "tonalRamp": ["oklch(18% 0.06 12)", "oklch(26% 0.09 12)", "oklch(34% 0.12 12)", "oklch(42% 0.15 12)", "oklch(52% 0.16 12)", "oklch(64% 0.13 12)", "oklch(78% 0.08 12)", "oklch(93% 0.03 12)"] },
+      "bordeaux-deep": { "role": "primary", "displayName": "Diep bordeaux", "canonical": "#7A1530", "tonalRamp": ["oklch(16% 0.05 12)", "oklch(24% 0.08 12)", "oklch(32% 0.11 12)", "oklch(40% 0.13 12)", "oklch(50% 0.14 12)", "oklch(62% 0.12 12)", "oklch(76% 0.07 12)", "oklch(92% 0.03 12)"] },
+      "signal-amber": { "role": "secondary", "displayName": "Signaalamber", "canonical": "#F2C14E", "tonalRamp": ["oklch(22% 0.05 85)", "oklch(34% 0.08 85)", "oklch(46% 0.11 85)", "oklch(58% 0.13 85)", "oklch(70% 0.14 85)", "oklch(82% 0.14 85)", "oklch(90% 0.09 85)", "oklch(96% 0.04 85)"] },
+      "home-teal": { "role": "tertiary", "displayName": "Thuisgroen", "canonical": "#2FB59B", "tonalRamp": ["oklch(20% 0.04 175)", "oklch(30% 0.06 175)", "oklch(42% 0.08 175)", "oklch(54% 0.1 175)", "oklch(66% 0.12 175)", "oklch(77% 0.1 175)", "oklch(87% 0.06 175)", "oklch(95% 0.03 175)"] },
+      "board-lacquer": { "role": "neutral", "displayName": "Bordlak", "canonical": "#4A0D1A" },
+      "panel-lacquer": { "role": "neutral", "displayName": "Paneellak", "canonical": "#3F0B17" },
+      "ground-base": { "role": "neutral", "displayName": "Nachtgrond", "canonical": "#14040A" },
+      "ivory": { "role": "neutral", "displayName": "Ivoor", "canonical": "#F4EBDD", "tonalRamp": ["oklch(20% 0.01 75)", "oklch(32% 0.015 75)", "oklch(44% 0.02 75)", "oklch(56% 0.02 75)", "oklch(68% 0.02 75)", "oklch(80% 0.02 75)", "oklch(89% 0.02 75)", "oklch(94% 0.02 75)"] },
+      "rose-grey": { "role": "neutral", "displayName": "Rozegrijs", "canonical": "#E3C9CF" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Woordmerk", "purpose": "V70 in de kop; 88px op het welkomstscherm." },
+      "headline": { "displayName": "Vakwaarde", "purpose": "De ene grote waarde per vak, tabulair." },
+      "title": { "displayName": "Bordregel", "purpose": "Regels op het vertrekbord, tabulair." },
+      "section": { "displayName": "Sectiekop", "purpose": "Amber koppen boven secties en het bord." },
+      "body": { "displayName": "Tekst", "purpose": "Lopende tekst en formulieren." },
+      "label": { "displayName": "Label", "purpose": "Vaktitels en metadata." }
+    },
+    "shadows": [
+      { "name": "rim-light", "value": "inset 0 1px 0 rgba(255,255,255,.2)", "purpose": "Lichtrand langs de bovenkant van elk lakpaneel." },
+      { "name": "board-lift", "value": "0 18px 32px -16px rgba(0,0,0,.7)", "purpose": "Alleen het vertrekbord." },
+      { "name": "button-lift", "value": "0 8px 18px -10px rgba(0,0,0,.7)", "purpose": "Primaire knop." },
+      { "name": "nav-float", "value": "inset 0 1px 0 rgba(255,255,255,.1), 0 14px 30px -8px rgba(0,0,0,.7)", "purpose": "Zwevende tabbalk." }
+    ],
+    "motion": [
+      { "name": "ease-out-expo", "value": "cubic-bezier(.16,1,.3,1)", "purpose": "Alle overgangen: indrukken, toast, kop, chevrons." },
+      { "name": "flap", "value": "rotateX(-88deg) → 0, 0.62s, 90ms per rij", "purpose": "Splitflap van een bordregel wanneer de inhoud verandert; uit bij reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "column", "value": "560px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Vertrekbord",
+      "kind": "custom",
+      "refersTo": "board",
+      "description": "Signature: wat er nu en vandaag speelt, in de kolommen tijd | wat | wie.",
+      "html": "<section class=\"ds-board\"><h2 class=\"ds-board-h\">Vandaag in V70</h2><button class=\"ds-brow ds-now\"><span>nu</span><span>Uit · Stadscafé</span><span>3 gaan</span></button><button class=\"ds-brow\"><span>vanavond</span><span>Eten · Pasta pesto</span><span>9 mee</span></button></section>",
+      "css": ".ds-board{position:relative;overflow:hidden;padding:14px 16px 2px;border-radius:22px;color:#F4EBDD;background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.03) 46%,rgba(0,0,0,.14)),var(--lak-4,#4A0D1A);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 18px 32px -16px rgba(0,0,0,.7);font-family:Barlow,system-ui,sans-serif}.ds-board-h{margin:0 0 4px;font:600 15px/1.3 'Barlow Semi Condensed',Barlow,sans-serif;letter-spacing:.03em;color:#F2C14E}.ds-brow{display:grid;grid-template-columns:80px minmax(0,1fr) auto;gap:10px;align-items:baseline;width:calc(100% + 32px);margin:0 -16px;padding:11px 16px;border:0;background:none;color:inherit;text-align:left;box-shadow:0 -1px 0 rgba(244,235,221,.12);font:500 18px/1.25 'Barlow Semi Condensed',Barlow,sans-serif;font-variant-numeric:tabular-nums;cursor:pointer}.ds-brow span:last-child{color:#E3C9CF;font-weight:600;text-align:right}.ds-now span:first-child,.ds-now span:last-child{color:#F2C14E}.ds-brow:hover,.ds-brow:active{background:rgba(244,235,221,.08)}.ds-brow:focus-visible{outline:2px solid #F2C14E;outline-offset:-2px}"
+    },
+    {
+      "name": "Vak",
+      "kind": "card",
+      "refersTo": "tile",
+      "description": "Klikbaar overzichtsvak: label, één grote waarde, context.",
+      "html": "<button class=\"ds-tile\"><span class=\"ds-tt\">Wie is thuis</span><span class=\"ds-v\">9<small>/ 17</small></span><span class=\"ds-m\">Lotte, Mees, Sanne +6</span></button>",
+      "css": ".ds-tile{position:relative;display:flex;flex-direction:column;align-items:flex-start;width:170px;min-height:120px;padding:14px;border:0;border-radius:18px;color:#F4EBDD;text-align:left;background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.03) 46%,rgba(0,0,0,.14)),var(--lak-3,#3F0B17);box-shadow:inset 0 1px 0 rgba(255,255,255,.2);transition:transform .25s cubic-bezier(.16,1,.3,1),filter .25s;cursor:pointer;font-family:Barlow,system-ui,sans-serif}.ds-tt{font:600 13px/16px Barlow,sans-serif;color:#E3C9CF}.ds-v{margin-top:10px;font:700 34px/1.05 'Barlow Semi Condensed',Barlow,sans-serif;color:#5FD3BA;font-variant-numeric:tabular-nums}.ds-v small{margin-left:6px;font-size:18px;font-weight:600;color:#E3C9CF}.ds-m{margin-top:6px;font-size:13px;color:#E3C9CF}.ds-tile:hover{filter:brightness(1.08)}.ds-tile:active{transform:scale(.97)}.ds-tile:focus-visible{outline:2px solid #F2C14E;outline-offset:2px}"
+    },
+    {
+      "name": "Dit is huis",
+      "kind": "custom",
+      "refersTo": "here-setup",
+      "description": "Opt-in voor de thuischeck: slaat het thuispunt op dit toestel op.",
+      "html": "<button class=\"ds-here\"><span class=\"ds-pin\"><svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.9\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z\"/><circle cx=\"12\" cy=\"9.5\" r=\"2.5\"/></svg></span><span><b>Dit is huis</b><small>Ben je nu thuis? Tik hier.</small></span></button>",
+      "css": ".ds-here{display:flex;align-items:center;gap:12px;width:340px;padding:12px 14px;border:0;border-radius:18px;text-align:left;color:#F4EBDD;background:linear-gradient(180deg,rgba(255,255,255,.22),rgba(255,255,255,.05) 48%,rgba(0,0,0,.1)),#145A4C;box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(95,211,186,.45);cursor:pointer;font-family:Barlow,system-ui,sans-serif}.ds-pin{display:grid;place-items:center;width:42px;height:42px;border-radius:14px;background:#2FB59B;color:#06261F;flex:none}.ds-here b{display:block;font:600 18px/1.2 'Barlow Semi Condensed',Barlow,sans-serif}.ds-here small{display:block;margin-top:2px;font-size:13px;color:#E6F5F0}.ds-here:active{transform:scale(.98)}.ds-here:focus-visible{outline:2px solid #F2C14E;outline-offset:2px}"
+    },
+    {
+      "name": "Primaire knop",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Eén hoofdactie per kaart.",
+      "html": "<button class=\"ds-btn-primary\">Kom erbij</button>",
+      "css": ".ds-btn-primary{min-height:44px;padding:10px 14px;border:0;border-radius:12px;background:#F4EBDD;color:#4A0D1A;font:600 16px Barlow,system-ui,sans-serif;box-shadow:0 8px 18px -10px rgba(0,0,0,.7);transition:transform .2s cubic-bezier(.16,1,.3,1);cursor:pointer}.ds-btn-primary:hover{background:#FBF4EA}.ds-btn-primary:active{transform:scale(.97)}.ds-btn-primary:focus-visible{outline:2px solid #F2C14E;outline-offset:2px}"
+    },
+    {
+      "name": "Knop",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Gewone en selecteerbare knoppen (Mee, Misschien, Niet).",
+      "html": "<button class=\"ds-btn\">Misschien</button> <button class=\"ds-btn ds-on\">Mee</button>",
+      "css": ".ds-btn{min-height:44px;padding:10px 14px;border:0;border-radius:12px;background:rgba(244,235,221,.1);color:#F4EBDD;box-shadow:inset 0 0 0 1px rgba(244,235,221,.14);font:500 16px Barlow,system-ui,sans-serif;transition:transform .2s cubic-bezier(.16,1,.3,1),background .2s;cursor:pointer}.ds-btn:hover{background:rgba(244,235,221,.16)}.ds-btn:active{transform:scale(.97)}.ds-btn:focus-visible{outline:2px solid #F2C14E;outline-offset:2px}.ds-on{background:rgba(244,235,221,.24);box-shadow:inset 0 0 0 1.5px #F4EBDD}"
+    },
+    {
+      "name": "Invoerveld",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Tekstveld op lak.",
+      "html": "<input class=\"ds-input\" placeholder=\"Je naam\">",
+      "css": ".ds-input{width:280px;min-height:46px;padding:11px 13px;border:0;border-radius:12px;background:rgba(10,2,5,.35);color:#F4EBDD;box-shadow:inset 0 0 0 1px rgba(244,235,221,.18);font:16px Barlow,system-ui,sans-serif;caret-color:#F2C14E}.ds-input::placeholder{color:#B99AA2}.ds-input:focus{outline:2px solid #F2C14E;outline-offset:1px}"
+    },
+    {
+      "name": "Zonechip",
+      "kind": "chip",
+      "refersTo": "chip-home",
+      "description": "Zone van een huisgenoot: thuis, in de buurt, weg.",
+      "html": "<span class=\"ds-chip ds-home\">thuis</span> <span class=\"ds-chip ds-near\">in de buurt</span> <span class=\"ds-chip\">weg</span>",
+      "css": ".ds-chip{display:inline-block;padding:3px 10px;border-radius:99px;background:rgba(185,154,162,.16);color:#E3C9CF;font:600 12px/1.4 Barlow,system-ui,sans-serif}.ds-home{background:rgba(47,181,155,.2);color:#5FD3BA}.ds-near{background:rgba(242,193,78,.16);color:#F2C14E}"
+    },
+    {
+      "name": "Tabbalk",
+      "kind": "nav",
+      "refersTo": "nav",
+      "description": "Zwevende navigatie met vijf onderdelen.",
+      "html": "<nav class=\"ds-nav\"><button class=\"ds-tab ds-active\"><svg viewBox=\"0 0 24 24\"><rect x=\"3.5\" y=\"3.5\" width=\"7\" height=\"7\" rx=\"2\"/><rect x=\"13.5\" y=\"3.5\" width=\"7\" height=\"7\" rx=\"2\"/><rect x=\"3.5\" y=\"13.5\" width=\"7\" height=\"7\" rx=\"2\"/><rect x=\"13.5\" y=\"13.5\" width=\"7\" height=\"7\" rx=\"2\"/></svg>Overzicht</button><button class=\"ds-tab\"><svg viewBox=\"0 0 24 24\"><path d=\"M3.5 11 12 4l8.5 7\"/><path d=\"M5.5 9.5V20h13V9.5\"/><path d=\"M10 20v-5h4v5\"/></svg>Thuis</button></nav>",
+      "css": ".ds-nav{display:flex;width:300px;height:66px;padding:0 6px;border-radius:24px;background:rgba(22,4,9,.8);backdrop-filter:blur(18px) saturate(160%);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 14px 30px -8px rgba(0,0,0,.7)}.ds-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:0;background:none;color:#B99AA2;font:500 11px/1 Barlow,system-ui,sans-serif;cursor:pointer;border-radius:18px}.ds-tab svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ds-tab:hover{color:#E3C9CF}.ds-active{color:#F4EBDD}.ds-active svg{stroke:#F2C14E}.ds-tab:focus-visible{outline:2px solid #F2C14E;outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Het vertrekbord van V70",
+    "overview": "V70 leest als het perronbord van het eigen huis: wat er nu en vandaag gebeurt, wie het doet en hoe laat, in een vaste kolomrij van tijd, wat en wie. Het materiaal is glanzend bordeaux lak: diepe panelen met een zachte glans linksboven en een lichtrand langs de bovenkant, op een grond die van glanzend bordeaux naar bijna zwart verloopt. Ivoor is de tekst, amber betekent \"nu\", zeegroen betekent \"thuis\".\n\nHet is een werkscherm voor zeventien studenten die kort en vaak kijken. De hiërarchie komt uit schaalcontrast (grote condensed cijfers, kleine labels), niet uit kaders of ornament. Alles staat op één raster met één basislijn per rij vakken; een status verandert kleur, nooit maat. Er is één beweging met betekenis: een regel op het bord klapt om als een splitflap wanneer zijn inhoud verandert.",
+    "keyCharacteristics": [
+      "Glanzend bordeaux als vaste grond en materiaal, nooit als accentje.",
+      "Vertrekbordritme: tijd | wat | wie, tabulaire cijfers.",
+      "Drie belangtreden: nu (amber), straks (ivoor), later (gedimd ivoor).",
+      "Vakken met één grote waarde en één of twee regels context.",
+      "Zwevende tabbalk, profiel via de avatar rechtsboven."
+    ],
+    "rules": [
+      { "name": "The Amber Is Now Rule", "body": "Amber staat alleen op iets dat nu aandacht vraagt of een kop is. Nooit als versiering.", "section": "colors" },
+      { "name": "The Teal Means Home Rule", "body": "Groen betekent aanwezig of thuis, en niets anders.", "section": "colors" },
+      { "name": "The Ivory On Lacquer Rule", "body": "Kleine tekst op de lichtste lak (het brede vak, de groene strook) is ivoor, niet rozegrijs; rozegrijs haalt daar geen 4,5:1.", "section": "colors" },
+      { "name": "The Tabular Rule", "body": "Tijden, aantallen en datums staan altijd in tabulaire cijfers, zodat kolommen recht blijven.", "section": "typography" },
+      { "name": "The Scale Contrast Rule", "body": "Hiërarchie komt uit maat en gewicht (34px tegen 13px), niet uit kaders, lijnen of iconen.", "section": "typography" },
+      { "name": "The Lacquer Rule", "body": "Een paneel is lak: grondkleur, glansverloop en lichtrand. Geen randen of omlijningen om panelen; een amber rand alleen voor \"jouw beurt / vandaag\".", "section": "elevation" }
+    ],
+    "dos": [
+      "Do houd glanzend bordeaux (#8E1B35 en de lakgrond) de dominante kleur van elk scherm.",
+      "Do zet tijden en aantallen in Barlow Semi Condensed met tabulaire cijfers.",
+      "Do geef elk nieuw paneel de lak: glansverloop, lichtrand, 18px.",
+      "Do gebruik lijniconen (SVG, 1,8–1,9 lijndikte) voor alles wat een icoon nodig heeft.",
+      "Do laat alleen bordregels omklappen wanneer hun inhoud verandert, en zet beweging uit bij reduced motion."
+    ],
+    "donts": [
+      "Don't gebruik emoji of tekstglyphs als iconen of avatars; profielen zijn initialen of een foto.",
+      "Don't gebruik amber of groen als versiering.",
+      "Don't zet randen of gekleurde zijstrepen om panelen.",
+      "Don't gebruik rozegrijze kleine tekst op het brede bordeaux vak of de groene strook.",
+      "Don't herhaal op een vak dezelfde regel die al op het bord staat; toon de aanvullende info (kok, namen)."
+    ]
+  }
+}

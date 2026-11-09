@@ -1,5 +1,5 @@
 // Service worker: app-shell offline + pushmeldingen.
-const CACHE = 'thuis-shell-v3';
+const CACHE = 'v70-shell-v1';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'rota.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -29,10 +29,10 @@ self.addEventListener('fetch', (e) => {
 });
 
 self.addEventListener('push', (e) => {
-  let d = { title: 'Thuis', body: '' };
+  let d = { title: 'V70', body: '' };
   try { d = { ...d, ...e.data.json() }; } catch { if (e.data) d.body = e.data.text(); }
   e.waitUntil(self.registration.showNotification(d.title, {
-    body: d.body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: d.tag || 'thuis', data: { url: d.url || './' },
+    body: d.body, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: d.tag || 'v70', data: { url: d.url || './' },
   }));
 });
 

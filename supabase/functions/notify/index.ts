@@ -2,9 +2,10 @@
 //  - Vanuit de app (gebruikers-JWT): { type: 'out' | 'activity' | 'dinner' | 'swap' | 'test', id?, day? }
 //    De tekst wordt hier uit de database opgebouwd, dus de app kan geen willekeurige berichten sturen.
 //  - Vanuit GitHub Actions (header x-service-key = secret key): { type: 'rota' } → beurt-herinneringen.
+//  - Vanuit Supabase cron: { type: 'afval' } → herinnering afvaldienst (ma/wo/vr 17:00, max. één keer per dag).
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { addIso, holders, periodEnd, periodOf, periodStart } from './rota.js'; // kopie van app/rota.js (test bewaakt dat)
+import { addIso, afvalRooms, afvalWeek, afvalWeekStart, holders, periodEnd, periodOf, periodStart } from './rota.js'; // kopie van app/rota.js (test bewaakt dat)
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -61,6 +62,35 @@ async function send(filter: { household?: string; except?: string; members?: str
   return results.filter((r) => r.status === 'fulfilled').length;
 }
 
+// Wie heeft in deze week afvaldienst (per huis), met ruilingen erin verwerkt.
+async function afvalHolders(week: string, household?: string) {
+  const rooms = afvalRooms(afvalWeek(week));
+  let mq = admin.from('members').select('id, household_id, room').in('room', rooms);
+  let oq = admin.from('afval_overrides').select('household_id, room, member_id').eq('week_start', week);
+  if (household) { mq = mq.eq('household_id', household); oq = oq.eq('household_id', household); }
+  const [{ data: ms, error }, { data: ovs }] = await Promise.all([mq, oq]);
+  if (error) throw error;
+  const houses = new Set([...(ms ?? []), ...(ovs ?? [])].map((x) => x.household_id));
+  return [...houses].flatMap((h) => rooms.map((r) =>
+    (ovs ?? []).find((o) => o.household_id === h && o.room === r)?.member_id ?? (ms ?? []).find((m) => m.household_id === h && m.room === r)?.id)
+    .filter(Boolean)) as string[];
+}
+const weekLabel = (week: string) => `${dayName(week)} – ${dayName(addIso(week, 6))}`;
+
+async function afvalReminder() {
+  const now = new Date();
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, weekday: 'short', hour: '2-digit', hour12: false })
+    .formatToParts(now).map((x) => [x.type, x.value]));
+  if (!['Mon', 'Wed', 'Fri'].includes(p.weekday) || p.hour !== '17') return { skipped: 'niet ma/wo/vr 17:00' };
+  const day = isoDay(now);
+  const { error: dup } = await admin.from('afval_reminders').insert({ day });
+  if (dup) return { skipped: 'vandaag al verstuurd' };
+  const week = afvalWeekStart(afvalWeek(day));
+  const ids = await afvalHolders(week);
+  const sent = ids.length ? await send({ members: ids }, { title: 'Denk aan je afvaldienst', body: `Afvalzakken, karton, glas en vaatdoeken · t/m ${dayName(addIso(week, 6))}`, tag: `afval-${day}`, url: './#afval' }) : 0;
+  return { day, week, sent };
+}
+
 async function fromApp(body: { type?: string; id?: string; day?: string }, me: Member) {
   const toOthers = (msg: Msg) => send({ household: me.household_id, except: me.id }, msg);
   const nameOf = async (id: string) => (await admin.from('members').select('name').eq('id', id).maybeSingle()).data?.name ?? '?';
@@ -95,6 +125,24 @@ async function fromApp(body: { type?: string; id?: string; day?: string }, me: M
       if (['accepted', 'declined'].includes(s.status) && s.to_member === me.id) {
         const ok = s.status === 'accepted';
         return send({ members: [s.from_member] }, { title: ok ? `✅ ${me.name} neemt je beurt over` : `❌ ${me.name} kan niet ruilen`, body: `${chore} (${dayName(s.period_start)})`, tag, url: './#home' });
+      }
+      return 0;
+    }
+    case 'afvalruil': {
+      const { data: s } = await admin.from('afval_swaps').select('*').eq('id', body.id ?? '').eq('household_id', me.household_id).maybeSingle();
+      if (!s) return 0;
+      const tag = `afvalruil-${s.id}`;
+      if (s.status === 'open' && s.from_member === me.id) {
+        const busy = await afvalHolders(s.week_start, me.household_id); // wie die week al dienst heeft, kan niet ruilen
+        const to = s.to_member ? [s.to_member]
+          : ((await admin.from('members').select('id').eq('household_id', me.household_id)).data ?? []).map((m) => m.id).filter((id) => !busy.includes(id));
+        return to.length ? send({ members: to }, { title: `${me.name} wil afvaldienst ruilen`, body: `Week ${weekLabel(s.week_start)}. Tik om te reageren.`, tag, url: './#afval' }) : 0;
+      }
+      if (s.status === 'accepted' && s.accepted_by === me.id) {
+        return send({ members: [s.from_member] }, { title: `${me.name} ruilt met je`, body: `${me.name} doet jouw afvaldienst (${weekLabel(s.week_start)}). Jij doet ${weekLabel(s.other_week)}.`, tag, url: './#afval' });
+      }
+      if (s.status === 'declined' && s.to_member === me.id) {
+        return send({ members: [s.from_member] }, { title: `${me.name} kan niet ruilen`, body: `Afvaldienst ${weekLabel(s.week_start)}`, tag, url: './#afval' });
       }
       return 0;
     }
@@ -141,6 +189,8 @@ Deno.serve(async (req) => {
   try {
     if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return json({ error: 'VAPID-sleutels ontbreken' }, 500);
     const body = await req.json().catch(() => ({}));
+
+    if (body.type === 'afval') return json(await afvalReminder()); // beveiligd door tijdstip + één keer per dag
 
     if (body.type === 'rota') {
       if (!adminKeys.has(req.headers.get('x-service-key') ?? '')) return json({ error: 'verboden' }, 403);

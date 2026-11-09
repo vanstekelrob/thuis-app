@@ -20,3 +20,10 @@ export function holder(chore, p, slot, rotation, overrides) {
 }
 export const holders = (chore, p, rotation, overrides) =>
   Array.from({ length: chore.team_size }, (_, slot) => holder(chore, p, slot, rotation, overrides));
+
+// Afvaldienst: elke week van dinsdag t/m maandag twee buren; de kamers schuiven door (…, 15+16, 17+1, 2+3, …).
+// Dezelfde regels staan in de database (afval_room in supabase/migrations): pas ze samen aan.
+export const AFVAL = { start: '2026-11-10', firstRoom: 5, rooms: 17 };
+export const afvalWeek = (day) => Math.floor(diffDays(AFVAL.start, day) / 7);
+export const afvalWeekStart = (w) => addIso(AFVAL.start, w * 7);
+export const afvalRooms = (w) => [0, 1].map((k) => ((((AFVAL.firstRoom - 1 + 2 * w + k) % AFVAL.rooms) + AFVAL.rooms) % AFVAL.rooms) + 1);

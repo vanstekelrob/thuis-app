@@ -1,17 +1,32 @@
 {
-  "name": "Thuis",
-  "short_name": "Thuis",
-  "description": "Huis-app: afval, wie is thuis, uit, activiteiten en avondeten.",
+  "name": "Verbs 70",
+  "short_name": "V70",
+  "description": "De app van V70: rooster, wie is thuis, uit, activiteiten en eten.",
   "lang": "nl",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f6f7f5",
-  "theme_color": "#1f6f5c",
+  "background_color": "#1C050B",
+  "theme_color": "#2A0710",
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

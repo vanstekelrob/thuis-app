@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, VAPID_PUBLIC_KEY } from './config.js';
-import { addIso, periodOf, periodStart, periodEnd, holders } from './rota.js';
+import { addIso, afvalWeek, afvalWeekStart, afvalRooms } from './rota.js';
 
 const sb = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 const $ = (s) => document.querySelector(s);
@@ -11,12 +11,14 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* privémodus */ } },
 };
 
-const TABS = ['home', 'uit', 'activiteiten', 'eten', 'ik'];
+// Het overzicht is altijd het startscherm; elk onderdeel heeft een vak op het overzicht.
+const TABS = ['home', 'afval', 'thuis', 'uit', 'activiteiten', 'eten', 'ik'];
+const TAB_LABEL = { home: 'Overzicht', afval: 'Afvaldienst', thuis: 'Wie is thuis', uit: 'Uit', activiteiten: 'Activiteiten', eten: 'Eten', ik: 'Profiel' };
 const state = {
-  tab: TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : store.get('tab') || 'home',
+  tab: TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home',
   push: 'unknown', // unconfigured | unsupported | needs-install | denied | off | on
   me: null, household: null, secret: null, session: null,
-  members: [], chores: [], rotation: [], overrides: [], done: [], swaps: [],
+  members: [], afvalOverrides: [], afvalSwaps: [],
   activities: [], actRsvps: [], dinners: [], dinRsvps: [],
 };
 
@@ -30,6 +32,14 @@ function dayLabel(s) {
   const d = new Date(s + 'T12:00:00');
   return `${DAYS[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`;
 }
+const hhmm = (d) => d.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+// Korte tijd voor het bord en de vakken: "20:00" vandaag, "morgen", anders "do 20:00".
+function whenShort(ts) {
+  const d = new Date(ts);
+  if (iso(d) === today()) return hhmm(d);
+  if (iso(d) === addIso(today(), 1)) return 'morgen';
+  return `${DAYS[d.getDay()]} ${hhmm(d)}`;
+}
 const timeFmt = (ts) => (ts ? new Date(ts).toLocaleString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const ago = (ts) => {
   const m = Math.round((Date.now() - new Date(ts)) / 60000);
@@ -39,7 +49,7 @@ function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toast.id); toast.id = setTimeout(() => t.classList.remove('show'), 2600);
 }
-const ZONES = { home: 'thuis', nearby: 'in de buurt', away: 'weg', unknown: '?' };
+const ZONES = { home: 'thuis', nearby: 'in de buurt', away: 'weg', unknown: 'onbekend' };
 const OUT_HOURS = 12; // "wil uit" verloopt vanzelf, anders blijft het dagen staan
 const outActive = (m) => m.out_status !== 'none' && (!m.out_until || new Date(m.out_until) > new Date());
 const memberName = (id) => state.members.find((m) => m.id === id)?.name || '?';
@@ -49,11 +59,36 @@ const names = (ids, max = 6) => {
   return n.length > max ? `${n.slice(0, max).join(', ')} +${n.length - max}` : n.join(', ');
 };
 
-// ───────── Rooster (berekend met rota.js, geen cron nodig) ─────────
-const rotOf = (c) => state.rotation.filter((r) => r.chore_id === c.id).sort((a, b) => a.position - b.position).map((r) => r.member_id);
-const holdersOf = (c, p) => holders(c, p, rotOf(c), state.overrides);
-const curPeriod = (c) => Math.max(0, periodOf(c, today()));
-const isDone = (c, h) => state.done.find((d) => d.chore_id === c.id && d.period_start === h.ps && d.slot === h.slot);
+// Avatars: initialen op een vaste toon per persoon (profielfoto's volgen later).
+const initials = (n) => {
+  const w = String(n || '').trim().split(/\s+/).filter(Boolean);
+  return (w.length > 1 ? w[0][0] + w[1][0] : (w[0] || '?').slice(0, 2)).toUpperCase();
+};
+const TONES = ['#8E1B35', '#6E1229', '#A3203F', '#5E1022', '#1F6F62', '#7A4A1E', '#7A1530'];
+const tone = (id) => TONES[[...String(id)].reduce((s, c) => s + c.charCodeAt(0), 0) % TONES.length];
+const avatar = (m, cls = '') => `<span class="av ${cls}" style="--tone:${tone(m.id)}" aria-hidden="true">${esc(initials(m.name))}</span>`;
+const svg = (d) => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON = {
+  pin: svg('<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>'),
+  refresh: svg('<path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v5h-5"/>'),
+};
+
+// ───────── Afvaldienst (berekend met rota.js; ruilingen staan in afval_overrides) ─────────
+const curWeek = () => afvalWeek(today());
+const shortDay = (s) => { const d = new Date(s + 'T12:00:00'); return `${DAYS[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`; };
+const weekLabel = (w) => `${shortDay(afvalWeekStart(w))} – ${shortDay(addIso(afvalWeekStart(w), 6))}`;
+// Het duo van week w: per plek (kamer) wie het doet.
+const duty = (w) => afvalRooms(w).map((room) => {
+  const ws = afvalWeekStart(w), o = state.afvalOverrides.find((x) => x.week_start === ws && x.room === room);
+  return { room, id: o ? o.member_id : state.members.find((m) => m.room === room)?.id || null, swapped: !!o };
+});
+const onDuty = (w, id = state.me.id) => duty(w).some((d) => d.id === id);
+// Eerstvolgende week (vanaf deze) waarin iemand dienst heeft, eventueel zonder week `not`.
+const nextDuty = (id = state.me.id, not = null) => { for (let w = curWeek(); w < curWeek() + 40; w++) if (w !== not && onDuty(w, id)) return w; return null; };
+const duoNames = (w) => duty(w).map((d) => (d.id === state.me.id ? 'jij' : d.id ? memberName(d.id) : `kamer ${d.room} leeg`)).join(' & ');
+// Ruilverzoeken die jij kunt accepteren: aan jou, of aan iedereen terwijl jij die week vrij bent.
+const swapsForMe = () => state.afvalSwaps.filter((s) => s.from_member !== state.me.id
+  && (s.to_member === state.me.id || (!s.to_member && !onDuty(afvalWeek(s.week_start)))));
 
 // ───────── Data ─────────
 async function ensureSession() {
@@ -66,15 +101,11 @@ async function ensureSession() {
 
 async function loadAll() {
   const t = today();
-  const since = addIso(t, -35);
   const actSince = new Date(Date.now() - 6 * 3600e3).toISOString(); // activiteiten van vandaag blijven nog even staan
   const res = await Promise.all([
     sb.from('members').select('*').order('created_at'),
-    sb.from('chores').select('*').order('created_at'),
-    sb.from('chore_rotation').select('*'),
-    sb.from('chore_overrides').select('*').gte('period_start', since),
-    sb.from('chore_done').select('*').gte('period_start', since),
-    sb.from('swap_requests').select('*').eq('status', 'open'),
+    sb.from('afval_overrides').select('*').gte('week_start', afvalWeekStart(curWeek())),
+    sb.from('afval_swaps').select('*').eq('status', 'open').gte('week_start', afvalWeekStart(curWeek())),
     sb.from('activities').select('*').or(`starts_at.is.null,starts_at.gte.${actSince}`).order('starts_at', { nullsFirst: false }).limit(50),
     sb.from('activity_rsvps').select('*'),
     sb.from('dinners').select('*').gte('day', t).order('day').limit(14),
@@ -82,8 +113,8 @@ async function loadAll() {
   ]);
   const err = res.find((r) => r.error)?.error;
   if (err) throw err;
-  const [m, c, r, o, d, s, a, ar, dn, dr] = res.map((x) => x.data);
-  Object.assign(state, { members: m, chores: c, rotation: r, overrides: o, done: d, swaps: s, activities: a, actRsvps: ar, dinners: dn, dinRsvps: dr });
+  const [m, ov, sw, a, ar, dn, dr] = res.map((x) => x.data);
+  Object.assign(state, { members: m, afvalOverrides: ov, afvalSwaps: sw, activities: a, actRsvps: ar, dinners: dn, dinRsvps: dr });
   state.me = state.members.find((x) => x.id === state.session.user.id) || null;
   if (state.me) {
     const [h, sec] = await Promise.all([sb.from('households').select('*').maybeSingle(), sb.from('member_secrets').select('token').maybeSingle()]);
@@ -100,7 +131,7 @@ function refreshSoon() {
 
 function subscribe() {
   const ch = sb.channel('huis');
-  ['members', 'chores', 'chore_rotation', 'chore_overrides', 'chore_done', 'swap_requests', 'activities', 'activity_rsvps', 'dinners', 'dinner_rsvps']
+  ['members', 'afval_overrides', 'afval_swaps', 'activities', 'activity_rsvps', 'dinners', 'dinner_rsvps']
     .forEach((table) => ch.on('postgres_changes', { event: '*', schema: 'public', table }, refreshSoon));
   ch.subscribe((status) => $('#conn').classList.toggle('live', status === 'SUBSCRIBED'));
 }
@@ -171,97 +202,216 @@ const dist = (a, b) => {
   const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(x));
 };
-const getPos = () => new Promise((res, rej) => navigator.geolocation.getCurrentPosition(
-  (p) => res({ lat: p.coords.latitude, lon: p.coords.longitude }), rej, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }));
+const getPos = (precise = false) => new Promise((res, rej) => (navigator.geolocation
+  ? navigator.geolocation.getCurrentPosition((p) => res({ lat: p.coords.latitude, lon: p.coords.longitude }), rej,
+    { enableHighAccuracy: precise, timeout: 15000, maximumAge: precise ? 0 : 60000 })
+  : rej(new Error('geen locatie'))));
+const homePos = () => { try { return JSON.parse(store.get('homePos') || 'null'); } catch { return null; } };
 
-async function setZone(zone) {
-  await run(sb.from('members').update({ zone, zone_updated_at: new Date().toISOString() }).eq('id', state.me.id), `Zone: ${ZONES[zone]}`);
+async function setZone(zone, quiet = false) {
+  await run(sb.from('members').update({ zone, zone_updated_at: new Date().toISOString() }).eq('id', state.me.id), quiet ? null : `Je staat op ${ZONES[zone]}`);
 }
-async function locate() {
+async function locate(quiet = false) {
+  const home = homePos();
+  if (!home) { if (!quiet) toast('Tik eerst op "Dit is huis" als je thuis bent'); return; }
   try {
-    const home = JSON.parse(store.get('homePos') || 'null');
-    if (!home) return toast('Zet eerst "Dit is thuis" in het Ik-tabblad');
     const d = dist(await getPos(), home);
-    await setZone(d < 150 ? 'home' : d < 2500 ? 'nearby' : 'away');
-  } catch { toast('Locatie niet beschikbaar'); }
+    const zone = d < 150 ? 'home' : d < 2500 ? 'nearby' : 'away';
+    const fresh = Date.now() - new Date(state.me.zone_updated_at) < 30 * 60e3;
+    if (quiet && zone === state.me.zone && fresh) return; // niets veranderd: huisgenoten niet onnodig verversen
+    await setZone(zone, quiet);
+  } catch { if (!quiet) toast('Locatie niet beschikbaar'); }
+}
+// Bij openen checken, maar alleen voor wie "Dit is huis" heeft gezet en locatie niet heeft geweigerd.
+// (iOS vergeet de toestemming soms; dan vraagt het opnieuw, wat past bij de eigen opt-in.)
+async function autoLocate() {
+  if (!state.me || !homePos()) return;
+  const perm = await navigator.permissions?.query({ name: 'geolocation' }).catch(() => null);
+  if (perm?.state !== 'denied') await locate(true);
 }
 async function saveHome() {
-  try { store.set('homePos', JSON.stringify(await getPos())); toast('Thuislocatie opgeslagen (alleen op dit toestel)'); } catch { toast('Locatie niet beschikbaar'); }
+  try {
+    store.set('homePos', JSON.stringify(await getPos(true)));
+    await setZone('home', true);
+    toast('Thuispunt opgeslagen. Je staat op thuis.');
+  } catch (e) { toast(e?.code === 1 ? 'Locatie geweigerd. Sta locatie toe voor V70 in je instellingen.' : 'Locatie niet beschikbaar'); }
+}
+async function forgetHome() {
+  store.set('homePos', '');
+  await setZone('unknown', true);
+  toast('Thuispunt gewist op dit toestel');
+}
+
+// ───────── Overzicht ─────────
+const dinnerToday = () => state.dinners.find((x) => x.day === today());
+const eaters = (d) => (d ? state.dinRsvps.filter((x) => x.dinner_id === d.id && x.answer === 'mee').reduce((s, x) => s + 1 + x.guests, 0) : 0);
+const nextActivity = () => state.activities.find((a) => a.starts_at && new Date(a.starts_at) > Date.now() - 2 * 3600e3);
+const actMee = (a) => state.actRsvps.filter((r) => r.activity_id === a.id && r.answer === 'mee').length;
+
+// Het bord: wat er nu en vandaag speelt. lvl 0 = nu (amber), 1 = straks, 2 = later.
+function boardRows() {
+  const me = state.me, t = today(), rows = [];
+  swapsForMe().forEach((s) =>
+    rows.push({ k: 'swap' + s.id, lvl: 0, t: 'nu', w: 'Ruilverzoek afval', who: `van ${memberName(s.from_member)}`, tab: 'afval' }));
+  if (onDuty(curWeek())) {
+    const reminderDay = [1, 3, 5].includes(new Date().getDay()); // ma/wo/vr: dan komt ook de herinnering
+    rows.push({ k: 'afval', lvl: reminderDay ? 0 : 1, t: 't/m ma', w: 'Afvaldienst', who: 'jij', tab: 'afval' });
+  }
+  const out = state.members.filter(outActive);
+  if (out.length) {
+    const going = out.some((m) => m.out_status === 'going');
+    const place = out.find((m) => m.out_place)?.out_place;
+    rows.push({ k: 'out', lvl: going ? 0 : 1, t: going ? 'nu' : 'vanavond', w: place ? `Uit · ${place}` : 'Uit', who: `${out.length} ${going ? 'gaan' : 'willen'}`, tab: 'uit' });
+  }
+  const d = dinnerToday(), n = eaters(d);
+  if (d?.menu || n) rows.push({ k: 'eten', lvl: 1, t: 'vanavond', w: d?.menu ? `Eten · ${d.menu}` : 'Eten', who: `${n} mee`, tab: 'eten' });
+  const a = nextActivity();
+  if (a && new Date(a.starts_at) - Date.now() < 7 * 864e5) {
+    rows.push({ k: 'act' + a.id, lvl: iso(new Date(a.starts_at)) === t ? 1 : 2, t: whenShort(a.starts_at), w: a.title, who: `${actMee(a)} mee`, tab: 'activiteiten' });
+  }
+  return rows.sort((x, y) => x.lvl - y.lvl).slice(0, 4);
+}
+
+// Regels klappen alleen om (splitflap) als hun inhoud sinds de vorige keer veranderd is.
+let lastBoard = {};
+const sig = (r) => `${r.t}|${r.w}|${r.who}`;
+function board() {
+  const rows = boardRows();
+  const html = rows.map((r, i) => `<button class="brow lvl${r.lvl}${lastBoard[r.k] === sig(r) ? '' : ' flip'}" style="--i:${i}" data-act="tab" data-tab="${r.tab}">
+    <span>${esc(r.t)}</span><span>${esc(r.w)}</span><span>${esc(r.who)}</span></button>`).join('');
+  lastBoard = Object.fromEntries(rows.map((r) => [r.k, sig(r)]));
+  return `<section class="board"><h2>Vandaag in V70</h2>${html || '<p class="quiet">Rustig in huis. Nog niets gepland vandaag.</p>'}</section>`;
+}
+
+const HERE = { home: 'Jij bent thuis', nearby: 'Jij bent in de buurt', away: 'Jij bent weg', unknown: 'Waar ben je?' };
+function hereStrip() {
+  if (!homePos()) {
+    return `<button class="here setup" data-act="sethome"><span class="pin">${ICON.pin}</span>
+      <span class="grow"><b>Dit is huis</b><small>Ben je nu thuis? Tik hier. Daarna checkt V70 bij het openen of je thuis bent.</small></span></button>`;
+  }
+  const z = state.me.zone;
+  return `<button class="here ${z}" data-act="locate"><span class="pin">${ICON.pin}</span>
+    <span class="grow"><b>${HERE[z]}</b><small>bijgewerkt ${ago(state.me.zone_updated_at)} · tik om te checken</small></span>${ICON.refresh}</button>`;
+}
+
+function tiles() {
+  const me = state.me, w = curWeek(), mineNow = onDuty(w), next = nextDuty(me.id, mineNow ? w : null);
+  const afvalMeta = mineNow ? '<span class="m act">jij hebt deze week dienst</span>'
+    : !me.room ? '<span class="m act">kies je kamer om ingeroosterd te worden</span>'
+      : `<span class="m">jij: ${next === null ? 'nog niet ingeroosterd' : weekLabel(next)}</span>`;
+
+  const home = state.members.filter((m) => m.zone === 'home');
+  const stack = home.slice(0, 5).map((m) => avatar(m)).join('') + (home.length > 5 ? `<span class="av more">+${home.length - 5}</span>` : '');
+
+  const d = dinnerToday(), myDinner = d && state.dinRsvps.find((x) => x.dinner_id === d.id && x.member_id === me.id);
+  const cook = d?.cook_id ? memberName(d.cook_id) : null; // het menu staat al op het bord
+  const out = state.members.filter(outActive);
+  const a = nextActivity();
+
+  return `<button class="tile wide" data-act="tab" data-tab="afval"><span class="tt">Afvaldienst · ${weekLabel(w)}</span>
+      <span class="v">${esc(duoNames(w))}</span>${afvalMeta}</button>
+    <button class="tile" data-act="tab" data-tab="thuis"><span class="tt">Wie is thuis</span>
+      <span class="v teal">${home.length}<small>/ ${state.members.length}</small></span><span class="stack">${stack}</span></button>
+    <button class="tile" data-act="tab" data-tab="eten"><span class="tt">Eten vanavond</span>
+      <span class="v">${eaters(d)}<small>mee</small></span><span class="m">${esc(cook ? `kok: ${cook}` : d?.menu || 'nog geen menu')}</span>
+      ${myDinner ? '' : '<span class="m act">jij: nog niet gereageerd</span>'}</button>
+    <button class="tile" data-act="tab" data-tab="uit"><span class="tt">Uit</span>
+      <span class="v${out.length ? ' amber' : ''}">${out.length}<small>${out.length === 1 ? 'persoon' : 'personen'}</small></span>
+      <span class="m">${esc(out.length ? names(out.map((m) => m.id), 3) : 'niemand gaat uit')}</span></button>
+    <button class="tile" data-act="tab" data-tab="activiteiten"><span class="tt">Activiteiten</span>
+      <span class="v">${a ? esc(whenShort(a.starts_at)) : 'Niks'}</span>
+      <span class="m">${a ? `${esc(a.title)} · ${actMee(a)} mee` : 'plan iets leuks'}</span></button>`;
+}
+
+function viewHome() {
+  return `${board()}${hereStrip()}<div class="tiles">${tiles()}</div>`;
 }
 
 // ───────── Views ─────────
 function viewSetup() {
-  return `<div class="card"><h2 style="margin-top:0">Nog niet gekoppeld</h2>
-    <p class="muted">Deze app is nog niet verbonden met een Supabase-project. Volg de stappen in de README van de repository.</p></div>`;
+  return `<section class="welcome"><div class="logo">V70</div>
+    <p class="tag">Nog niet gekoppeld aan de database. Volg de stappen in de README van de repository.</p></section>`;
 }
+
+const roomSelect = (cur) => `<select name="room" required aria-label="Je kamer"><option value="">Welke kamer heb je?</option>${
+  Array.from({ length: 17 }, (_, i) => `<option value="${i + 1}" ${cur === i + 1 ? 'selected' : ''}>Kamer ${i + 1}</option>`).join('')}</select>`;
 
 function viewOnboarding() {
-  return `<div class="card"><h2 style="margin-top:0">Welkom</h2>
-    <p class="muted">Start een nieuw huis (jij wordt beheerder), of sluit aan met de code van een huisgenoot.</p>
-    <form data-form="create"><input name="household" placeholder="Naam van het huis" required maxlength="60">
-      <input name="name" placeholder="Jouw naam" required maxlength="30"><input name="emoji" placeholder="Emoji (bijv. 🦊)" maxlength="8">
-      <button class="primary">Nieuw huis starten</button></form></div>
-    <div class="card"><form data-form="join"><input name="code" placeholder="Uitnodigingscode" required autocapitalize="characters" autocomplete="off">
-      <input name="name" placeholder="Jouw naam" required maxlength="30"><input name="emoji" placeholder="Emoji" maxlength="8">
-      <button>Aansluiten</button></form></div>`;
+  const code = (location.hash.match(/code=([A-Za-z0-9]+)/) || [])[1] || '';
+  return `<section class="welcome"><div class="logo">V70</div><p class="tag">Verbs 70 · de app van ons huis</p>
+    <div class="board"><h2>${code ? 'Je bent uitgenodigd' : 'Instappen'}</h2>
+      <form data-form="join"><input name="code" placeholder="Code uit de uitnodiging" value="${esc(code)}" required autocapitalize="characters" autocomplete="off" aria-label="Uitnodigingscode">
+        <input name="name" placeholder="Je naam" required maxlength="30" autocomplete="given-name" aria-label="Je naam">
+        ${roomSelect()}<button class="primary">Kom erbij</button></form>
+      ${code ? '' : '<p class="muted">Geen code? Vraag een huisgenoot om de uitnodigingslink.</p>'}</div>
+    <details><summary>Huis opzetten (alleen de eerste keer)</summary>
+      <form data-form="create"><input name="household" value="Verbs 70" required maxlength="60" aria-label="Naam van het huis">
+        <input name="name" placeholder="Je naam" required maxlength="30" aria-label="Je naam">${roomSelect()}<button>Huis opzetten</button></form></details></section>`;
 }
 
-function swapCards() {
-  const chore = (id) => state.chores.find((c) => c.id === id);
-  const inc = state.swaps.filter((s) => s.to_member === state.me.id).map((s) => `<div class="card today"><b>${esc(memberName(s.from_member))}</b> vraagt of jij <b>${esc(chore(s.chore_id)?.name)}</b> overneemt (${dayLabel(s.period_start)}).
-    <div class="row wrap" style="margin-top:8px"><button class="primary" data-act="swap" data-id="${s.id}" data-ans="accept">Ja, ik doe het</button>
-    <button data-act="swap" data-id="${s.id}" data-ans="decline">Nee</button></div></div>`).join('');
-  const out = state.swaps.filter((s) => s.from_member === state.me.id).map((s) => `<div class="card muted">Ruilverzoek aan ${esc(memberName(s.to_member))} (${esc(chore(s.chore_id)?.name)}, ${dayLabel(s.period_start)}) wacht op antwoord.
-    <button data-act="swap" data-id="${s.id}" data-ans="cancel">Intrekken</button></div>`).join('');
-  return inc + out;
-}
-
-function choreCard(c) {
-  const p = curPeriod(c);
-  const started = today() >= c.start_date;
-  const hs = holdersOf(c, p);
-  const rows = hs.map((h) => {
-    const d = isDone(c, h);
-    const mine = h.id === state.me.id;
-    const pending = state.swaps.some((s) => s.chore_id === c.id && s.period_start === h.ps && s.slot === h.slot && s.from_member === state.me.id);
-    return `<div class="row"><span class="grow"><b>${esc(memberName(h.id))}</b>${h.over ? ' <span class="chip">aangepast</span>' : ''}${mine ? ' <span class="chip warn">jij</span>' : ''}</span>
-      ${d ? '<span class="chip home">✔ klaar</span>' : ''}
-      ${(mine || state.me.is_admin) && started ? `<button data-act="done" data-chore="${c.id}" data-ps="${h.ps}" data-slot="${h.slot}">${d ? 'Ongedaan' : '✔ Klaar'}</button>` : ''}
-      ${mine && !d && !pending ? `<button data-act="swapform" data-chore="${c.id}" data-ps="${h.ps}" data-slot="${h.slot}">↔ Ruil</button>` : ''}</div>
-      <div id="sw-${c.id}-${h.slot}"></div>`;
+function viewAfval() {
+  const me = state.me, w0 = curWeek(), next = nextDuty();
+  const roomCard = me.room ? '' : `<div class="card today"><b>Kies je kamer</b><p class="muted">Dan weet V70 wanneer jij afvaldienst hebt.</p>
+    <form data-form="room">${roomSelect()}<button class="primary">Opslaan</button></form></div>`;
+  const incoming = swapsForMe().map((s) => {
+    const theirs = afvalWeek(s.week_start), mine = nextDuty(me.id, theirs);
+    const partner = duty(theirs).find((d) => d.id !== s.from_member)?.id;
+    const from = esc(memberName(s.from_member));
+    return `<div class="card today"><b>${from}</b> wil ruilen${s.to_member ? ' met jou' : ''}: week <b>${weekLabel(theirs)}</b>${partner ? ` met ${esc(memberName(partner))}` : ''}.
+      <p class="muted">${mine === null ? 'Jij hebt nog geen week om terug te geven.' : `Jij doet dan die week, ${from} jouw week van ${weekLabel(mine)}.`}</p>
+      <div class="row wrap">${mine === null ? '' : `<button class="primary" data-act="afvalswap" data-id="${s.id}" data-ans="accept">Akkoord, ruilen</button>`}
+      ${s.to_member ? `<button data-act="afvalswap" data-id="${s.id}" data-ans="decline">Nee</button>` : ''}</div></div>`;
   }).join('');
-  const upcoming = [1, 2, 3].map((k) => `${dayLabel(periodStart(c, p + k))}: ${esc(names(holdersOf(c, p + k).map((h) => h.id), 3))}`).join(' · ');
-  const n = rotOf(c).length;
-  const full = Array.from({ length: Math.max(1, Math.ceil(n / c.team_size)) }, (_, k) => {
-    const hh = holdersOf(c, p + k);
-    return `<div class="row"><span class="muted" style="width:76px">${dayLabel(periodStart(c, p + k))}</span><span class="grow">${esc(names(hh.map((h) => h.id), 3))}</span></div>`;
-  }).join('');
-  return `<div class="card ${hs.some((h) => h.id === state.me.id) ? 'today' : ''}"><div class="dayhead"><b>${esc(c.emoji)} ${esc(c.name)}</b>
-    <span class="muted">${started ? `t/m ${dayLabel(periodEnd(c, p))}` : `start ${dayLabel(c.start_date)}`}</span></div>${rows}
-    <div class="muted" style="margin-top:6px">Daarna: ${upcoming}</div>
-    <details><summary class="muted">Volledig rooster (${n} personen)</summary>${full}</details></div>`;
+  const mineOpen = state.afvalSwaps.filter((s) => s.from_member === me.id);
+  const outgoing = mineOpen.map((s) => `<div class="card"><p class="muted">Je ruilverzoek voor ${weekLabel(afvalWeek(s.week_start))} (aan ${s.to_member ? esc(memberName(s.to_member)) : 'iedereen'}) wacht op antwoord.</p>
+    <button data-act="afvalswap" data-id="${s.id}" data-ans="cancel">Intrekken</button></div>`).join('');
+  const person = (d) => {
+    const m = state.members.find((x) => x.id === d.id);
+    return `<div class="row person">${m ? avatar(m, 'lg') : '<span class="av lg off">–</span>'}
+      <div class="grow"><b>${m ? esc(m.name) : 'Leeg'}</b><div class="muted">kamer ${d.room}${d.swapped ? ' · geruild' : ''}</div></div>
+      ${d.id === me.id ? '<span class="chip warn">jij</span>' : ''}</div>`;
+  };
+  const partnerNext = next === null ? null : duty(next).find((d) => d.id !== me.id);
+  const turn = next === null ? `<p class="muted">${me.room ? 'Nog niet ingeroosterd.' : 'Kies eerst je kamer.'}</p>`
+    : `<div class="dayhead"><b>${weekLabel(next)}</b><span class="muted">met ${partnerNext?.id ? esc(memberName(partnerNext.id)) : `kamer ${partnerNext?.room} (leeg)`}</span></div>
+      ${mineOpen.some((s) => afvalWeek(s.week_start) === next) ? '' : `<div id="afvalruil"><button data-act="afvalruilform" data-week="${afvalWeekStart(next)}">Ruilen</button></div>`}`;
+  const rows = Array.from({ length: 12 }, (_, k) => w0 + k).map((w) => `<div class="brow${onDuty(w) ? ' lvl0' : ''}">
+    <span>${shortDay(afvalWeekStart(w))}</span><span>${afvalRooms(w).join(' + ')}</span><span>${esc(duoNames(w))}</span></div>`).join('');
+  return `${roomCard}${incoming}${outgoing}
+    <h2>Deze week · ${weekLabel(w0)}</h2><div class="card${onDuty(w0) ? ' today' : ''}">${duty(w0).map(person).join('')}
+      <p class="muted">Afvalzakken weg · karton legen · glas weg · vaatdoeken wassen en opgevouwen terugleggen</p></div>
+    <h2>Jouw beurt</h2><div class="card">${turn}</div>
+    <section class="board"><h2>Komende weken</h2>${rows}</section>`;
 }
 
-function viewHome() {
-  const chores = state.chores.map(choreCard).join('') || `<p class="muted">Nog geen taken. ${state.me.is_admin ? 'Voeg er een toe in het Ik-tabblad.' : 'Een beheerder kan taken toevoegen.'}</p>`;
-  const people = state.members.map((m) => `<div class="row"><span class="big">${esc(m.emoji)}</span>
-    <div class="grow"><b>${esc(m.name)}</b><div class="muted">${ago(m.zone_updated_at)}</div></div>
+function viewThuis() {
+  const order = { home: 0, nearby: 1, away: 2, unknown: 3 };
+  const list = [...state.members].sort((a, b) => order[a.zone] - order[b.zone] || a.name.localeCompare(b.name));
+  const people = list.map((m) => `<div class="row person">${avatar(m, m.zone === 'home' ? 'lg' : 'lg off')}
+    <div class="grow"><b>${esc(m.name)}</b>${m.id === state.me.id ? ' <span class="chip warn">jij</span>' : ''}<div class="muted">${m.room ? `kamer ${m.room} · ` : ''}${ago(m.zone_updated_at)}</div></div>
     <span class="chip ${m.zone}">${ZONES[m.zone]}</span></div>`).join('');
   const home = state.members.filter((m) => m.zone === 'home').length;
   const mine = ['home', 'nearby', 'away'].map((z) => `<button data-act="zone" data-zone="${z}" class="${state.me.zone === z ? 'on' : ''}">${ZONES[z]}</button>`).join('');
-  return `${swapCards()}<h2>Beurten</h2>${chores}
-    <h2>Wie is thuis? (${home}/${state.members.length})</h2>
-    <div class="card"><div class="row wrap">${mine}<button data-act="locate">📍 Bepaal zone</button></div></div>
-    <details class="card" open><summary class="muted">Huisgenoten</summary>${people}</details>`;
+  const hook = `${SUPABASE_URL}/rest/v1/rpc/set_zone_by_token`;
+  return `${hereStrip()}
+    <h2>${home} van ${state.members.length} thuis</h2><div class="card">${people}</div>
+    <h2>Zelf aangeven</h2><div class="card"><div class="row wrap">${mine}</div>
+      ${homePos() ? '<button class="ghost" data-act="forgethome">Thuispunt wissen op dit toestel</button>' : ''}</div>
+    <h2>Automatisch, ook als de app dicht is</h2><details class="card"><summary>Zo stel je het in op je telefoon</summary>
+      <p class="muted">Een web-app kan je locatie niet volgen als hij dicht is. Je telefoon kan dat wel. Maak in de Opdrachten-app een persoonlijke automation <b>Bij aankomst</b> bij je huis, met de actie <b>Haal inhoud van URL op</b>, methode POST:</p>
+      <p class="muted">URL</p><code>${esc(hook)}</code>
+      <p class="muted">Header <b>apikey</b></p><code>${esc(SUPABASE_KEY)}</code>
+      <p class="muted">Header <b>Content-Type</b>: application/json. Body (JSON):</p><code>{"p_token":"${esc(state.secret)}","p_zone":"home"}</code>
+      <p class="muted">Maak er nog een voor <b>Bij vertrek</b> met "away" en zet "Vraag voor uitvoeren" uit. Op Android kan het met een automation-app. Deel je token met niemand.</p></details>`;
 }
 
 function viewUit() {
   const mine = state.me;
   const others = state.members.filter((m) => m.id !== mine.id && outActive(m));
-  const list = others.map((m) => `<div class="card"><div class="row"><span class="big">${esc(m.emoji)}</span>
+  const list = others.map((m) => `<div class="card"><div class="row">${avatar(m, 'lg')}
     <div class="grow"><b>${esc(m.name)}</b> ${m.out_status === 'going' ? 'gaat' : 'wil'} uit${m.out_place ? ` · ${esc(m.out_place)}` : ''}
     <div class="muted">${esc(m.out_note)}</div></div>
-    <button data-act="joinout" data-id="${m.id}">Ik ook</button></div></div>`).join('') || '<p class="muted">Niemand heeft nu plannen.</p>';
+    <button data-act="joinout" data-id="${m.id}">Ik ook</button></div></div>`).join('') || '<div class="card"><p class="muted">Niemand heeft nu plannen.</p></div>';
   const now = !outActive(mine) ? 'geen plannen' : mine.out_status === 'wants' ? 'wil uit' : 'gaat uit';
   return `<h2>Mijn status</h2><div class="card"><form data-form="out">
     <input name="place" placeholder="Waar? (bijv. stad, bioscoop)" maxlength="80" value="${esc(outActive(mine) ? mine.out_place : '')}">
@@ -273,7 +423,7 @@ function viewUit() {
 }
 
 function rsvpButtons(kind, id, mineAnswer) {
-  return ['mee', 'misschien', 'niet'].map((a) => `<button data-act="${kind}" data-id="${id}" data-ans="${a}" class="${mineAnswer === a ? 'on' : ''}">${a === 'mee' ? '👍 mee' : a === 'niet' ? '👎 niet' : '🤔 misschien'}</button>`).join('');
+  return ['mee', 'misschien', 'niet'].map((a) => `<button data-act="${kind}" data-id="${id}" data-ans="${a}" class="${mineAnswer === a ? 'on' : ''}">${a[0].toUpperCase() + a.slice(1)}</button>`).join('');
 }
 
 function viewActiviteiten() {
@@ -286,11 +436,11 @@ function viewActiviteiten() {
       <div class="row wrap" style="margin:8px 0">${rsvpButtons('arsvp', a.id, my)}</div>
       <div class="muted"><b>${mee.length}</b> mee: ${esc(names(mee, 8))}</div>
       ${a.created_by === state.me.id || state.me.is_admin ? `<button data-act="delact" data-id="${a.id}">Verwijderen</button>` : ''}</div>`;
-  }).join('') || '<p class="muted">Nog geen activiteiten. Voeg er een toe: film, spelletjes, klussen…</p>';
+  }).join('') || '<div class="card"><p class="muted">Nog geen activiteiten. Voeg er een toe: film, spelletjes, klussen…</p></div>';
   return `<h2>Nieuwe activiteit</h2><div class="card"><form data-form="activity">
     <input name="title" placeholder="Wat? (filmavond, Catan, tuin opruimen)" required maxlength="120">
     <input name="starts_at" type="datetime-local"><input name="note" placeholder="Opmerking" maxlength="500"><button class="primary">Toevoegen</button></form></div>
-    <h2>Thuis-activiteiten</h2>${items}`;
+    <h2>Gepland</h2>${items}`;
 }
 
 function viewEten() {
@@ -299,16 +449,15 @@ function viewEten() {
     const d = state.dinners.find((x) => x.day === day);
     const r = d ? state.dinRsvps.filter((x) => x.dinner_id === d.id) : [];
     const my = r.find((x) => x.member_id === state.me.id);
-    const eaters = r.filter((x) => x.answer === 'mee');
-    const total = eaters.reduce((s, x) => s + 1 + x.guests, 0);
+    const eat = r.filter((x) => x.answer === 'mee');
     const open = state.members.length - r.length;
     return `<div class="card ${day === today() ? 'today' : ''}"><div class="dayhead"><b>${dayLabel(day)}</b>
-      <span class="chip">${total} eters</span></div>
-      <div>${d?.menu ? '🍽️ ' + esc(d.menu) : '<span class="muted">Nog geen menu</span>'}${d?.cook_id ? ` · kok: ${esc(memberName(d.cook_id))}` : ''}</div>
+      <span class="chip">${eaters(d)} eters</span></div>
+      <div>${d?.menu ? esc(d.menu) : '<span class="muted">Nog geen menu</span>'}${d?.cook_id ? ` · kok: ${esc(memberName(d.cook_id))}` : ''}</div>
       <div class="row wrap" style="margin:8px 0">${rsvpButtons('drsvp', day, my?.answer)}
       <button data-act="guest" data-id="${day}">+gast (${my?.guests || 0})</button></div>
-      <div class="muted">Mee: ${esc(names(eaters.map((x) => x.member_id), 8))} · nog niet gereageerd: ${open}</div>
-      <details><summary class="muted">Menu / kok</summary><form data-form="dinner" data-day="${day}">
+      <div class="muted">Mee: ${esc(names(eat.map((x) => x.member_id), 8))} · nog niet gereageerd: ${open}</div>
+      <details><summary>Menu / kok</summary><form data-form="dinner" data-day="${day}">
         <input name="menu" placeholder="Wat eten we?" maxlength="120" value="${esc(d?.menu)}">
         <select name="cook"><option value="">Wie kookt?</option>${state.members.map((m) => `<option value="${m.id}" ${d?.cook_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
         <button>Opslaan</button></form></details></div>`;
@@ -321,65 +470,46 @@ function viewPush() {
     unknown: '<p class="muted">Bezig met controleren…</p>',
     unconfigured: '<p class="muted">Meldingen zijn nog niet ingesteld op de server.</p>',
     unsupported: '<p class="muted">Deze browser ondersteunt geen meldingen.</p>',
-    'needs-install': '<p>Op iPhone werken meldingen alleen vanaf het beginscherm: Safari → Deel → <b>Zet op beginscherm</b>. Open Thuis daarna via het icoon.</p>',
-    denied: '<p>Meldingen zijn geblokkeerd. Zet ze aan via de instellingen van je telefoon (Meldingen → Thuis) en open de app opnieuw.</p>',
-    off: '<button class="primary" data-act="pushon">🔔 Meldingen aanzetten</button>',
-    on: '<p>✅ Meldingen staan aan op dit toestel.</p><div class="row wrap"><button data-act="pushtest">Testmelding</button><button data-act="pushoff">Uitzetten</button></div>',
+    'needs-install': '<p>Op iPhone werken meldingen alleen vanaf het beginscherm: Safari → Deel → <b>Zet op beginscherm</b>. Open V70 daarna via het icoon.</p>',
+    denied: '<p>Meldingen zijn geblokkeerd. Zet ze aan via de instellingen van je telefoon (Meldingen → V70) en open de app opnieuw.</p>',
+    off: '<button class="primary" data-act="pushon">Meldingen aanzetten</button>',
+    on: '<p>Meldingen staan aan op dit toestel.</p><div class="row wrap"><button data-act="pushtest">Testmelding</button><button data-act="pushoff">Uitzetten</button></div>',
   }[state.push];
   return `<h2>Meldingen</h2><div class="card">${why}${body}</div>`;
 }
 
 function adminPanel() {
-  const chores = state.chores.map((c) => {
-    const list = rotOf(c).map((id, i) => `<div class="row"><span class="muted" style="width:24px">${i + 1}</span><span class="grow">${esc(memberName(id))}</span>
-      <button data-act="move" data-chore="${c.id}" data-member="${id}" data-dir="-1" aria-label="omhoog">↑</button>
-      <button data-act="move" data-chore="${c.id}" data-member="${id}" data-dir="1" aria-label="omlaag">↓</button></div>`).join('');
-    const opts = state.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
-    const slots = Array.from({ length: c.team_size }, (_, s) => `<option value="${s}">plek ${s + 1}</option>`).join('');
-    return `<details class="card"><summary><b>${esc(c.emoji)} ${esc(c.name)}</b> <span class="muted">(${c.period_days} d, ${c.team_size} p.)</span></summary>
-      <p class="muted">Volgorde van de rotatie:</p>${list}
-      <form data-form="override" data-chore="${c.id}"><p class="muted">Beurt van deze periode handmatig overschrijven:</p>
-        <select name="member">${opts}</select>${c.team_size > 1 ? `<select name="slot">${slots}</select>` : ''}<button>Overschrijf huidige beurt</button></form>
-      <button data-act="delchore" data-id="${c.id}">Taak verwijderen</button></details>`;
-  }).join('');
-  const people = state.members.map((m) => `<div class="row"><span class="grow">${esc(m.emoji)} ${esc(m.name)} ${m.is_admin ? '<span class="chip">beheerder</span>' : ''}</span>
+  const people = state.members.map((m) => `<div class="row person">${avatar(m)}<span class="grow">${esc(m.name)}${m.room ? ` <span class="muted">kamer ${m.room}</span>` : ''} ${m.is_admin ? '<span class="chip">beheerder</span>' : ''}</span>
     ${m.id === state.me.id ? '' : `<button data-act="admin" data-id="${m.id}" data-val="${!m.is_admin}">${m.is_admin ? 'Geen beheerder' : 'Beheerder'}</button>
     <button data-act="rmmember" data-id="${m.id}">Verwijder</button>`}</div>`).join('');
-  return `<h2>Beheer: taken</h2>${chores}
-    <div class="card"><form data-form="chore"><input name="name" placeholder="Nieuwe taak (bijv. Afval buiten zetten)" required maxlength="60">
-      <input name="emoji" placeholder="Emoji" maxlength="8" value="🗑️">
-      <label class="muted">Eerste beurt begint op</label><input name="start" type="date" value="${today()}" required>
-      <label class="muted">Dagen per beurt</label><input name="period" type="number" min="1" max="31" value="7" required>
-      <label class="muted">Personen per beurt</label><input name="team" type="number" min="1" max="5" value="1" required>
-      <button class="primary">Taak toevoegen (alle ${state.members.length} huisgenoten in de rotatie)</button></form></div>
-    <h2>Beheer: huisgenoten</h2><div class="card">${people}</div>`;
+  return `    <h2>Beheer: huisgenoten</h2><div class="card">${people}</div>`;
 }
 
 function viewIk() {
-  const hook = `${SUPABASE_URL}/rest/v1/rpc/set_zone_by_token`;
-  return `<div class="card"><b>${esc(state.me.emoji)} ${esc(state.me.name)}</b> · ${esc(state.household?.name)} ${state.me.is_admin ? '<span class="chip">beheerder</span>' : ''}
-    <p class="muted">Uitnodigingscode voor huisgenoten: <b class="code">${esc(state.household?.join_code)}</b></p></div>
+  return `<div class="card profile">${avatar(state.me, 'xl')}<div class="grow"><b>${esc(state.me.name)}</b>
+      <div class="muted">${esc(state.household?.name)}${state.me.room ? ` · kamer ${state.me.room}` : ''}${state.me.is_admin ? ' · beheerder' : ''}</div></div></div>
+    <h2>Jouw kamer</h2><div class="card"><form data-form="room">${roomSelect(state.me.room)}<button>Opslaan</button></form></div>
+    <h2>Huisgenoten uitnodigen</h2><div class="card"><p class="muted">Stuur de link naar een nieuwe huisgenoot. De code is <b class="code">${esc(state.household?.join_code)}</b></p>
+      <button class="primary" data-act="invite">Deel uitnodigingslink</button></div>
     ${viewPush()}
-    <h2>Locatie</h2><div class="card"><p class="muted">Je precieze locatie wordt nooit opgeslagen. Alleen de zone (thuis / buurt / weg).</p>
-    <button data-act="sethome">📍 Dit is thuis</button></div>
-    <h2>Automatisch (iOS Shortcuts / Android)</h2><div class="card">
-    <p class="muted">Maak een persoonlijke automation "Aankomen bij thuis" met actie <b>URL ophalen</b>, methode POST:</p>
-    <p class="muted">URL</p><code>${esc(hook)}</code>
-    <p class="muted">Header <b>apikey</b></p><code>${esc(SUPABASE_KEY)}</code>
-    <p class="muted">Header <b>Content-Type</b>: application/json. Body (JSON):</p><code>{"p_token":"${esc(state.secret)}","p_zone":"home"}</code>
-    <p class="muted">Maak er nog een voor "Vertrekken" met <b>"away"</b>. Deel je token met niemand.</p></div>
     ${state.me.is_admin ? adminPanel() : ''}`;
 }
 
-const VIEWS = { home: viewHome, uit: viewUit, activiteiten: viewActiviteiten, eten: viewEten, ik: viewIk };
+const VIEWS = { home: viewHome, afval: viewAfval, thuis: viewThuis, uit: viewUit, activiteiten: viewActiviteiten, eten: viewEten, ik: viewIk };
 
 function render(skipIfBusy = false) {
   const onboarding = !state.me;
   $('#tabs').hidden = onboarding;
-  $('#title').textContent = state.household?.name || 'Thuis';
+  $('#top').hidden = onboarding;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
+  if (!onboarding) {
+    $('#sub').textContent = state.tab === 'home'
+      ? `Verbs 70 · ${new Date().toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'short' })}` : TAB_LABEL[state.tab];
+    $('#me').textContent = initials(state.me.name);
+  }
+  document.title = onboarding || state.tab === 'home' ? 'V70' : `${TAB_LABEL[state.tab]} · V70`;
   // Realtime-update mag typen of een open formulier niet onderbreken.
-  if (skipIfBusy && (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || $('#view form details[open], #view details[open] form, #view [id^="sw-"] form'))) return;
+  if (skipIfBusy && (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || $('#view form details[open], #view details[open] form, #afvalruil form'))) return;
   $('#view').innerHTML = onboarding ? viewOnboarding() : (VIEWS[state.tab] || viewHome)();
 }
 
@@ -392,13 +522,20 @@ async function ensureDinner(day) {
   return r.data;
 }
 const outUntil = () => new Date(Date.now() + OUT_HOURS * 3600e3).toISOString();
-function setTab(tab) { state.tab = tab; store.set('tab', tab); history.replaceState(null, '', '#' + tab); render(); }
+function setTab(tab) { state.tab = tab; history.replaceState(null, '', '#' + tab); render(); scrollTo(0, 0); }
 
 const actions = {
   tab(el) { setTab(el.dataset.tab); },
   zone(el) { return setZone(el.dataset.zone); },
-  locate, sethome: saveHome,
+  locate: () => locate(false), sethome: saveHome, forgethome: forgetHome,
   pushon: enablePush, pushoff: disablePush, pushtest: testPush,
+  async invite() {
+    const url = `${location.origin}${location.pathname}#code=${state.household?.join_code}`;
+    try {
+      if (navigator.share) await navigator.share({ title: 'V70', text: 'Kom erbij in de V70-app van ons huis', url });
+      else { await navigator.clipboard.writeText(url); toast('Link gekopieerd'); }
+    } catch { /* delen geannuleerd */ }
+  },
   async joinout(el) {
     const o = state.members.find((m) => m.id === el.dataset.id);
     if (await run(sb.from('members').update({ out_status: 'going', out_place: o.out_place, out_note: o.out_note, out_until: o.out_until || outUntil() }).eq('id', state.me.id), 'Top, je gaat mee')) notify('out');
@@ -416,28 +553,19 @@ const actions = {
     const guests = ((cur?.guests || 0) + 1) % 6; // 0..5, daarna weer 0
     return run(sb.from('dinner_rsvps').upsert({ dinner_id: d.id, answer: cur?.answer || 'mee', guests }, { onConflict: 'dinner_id,member_id' }));
   },
-  // — rooster —
-  done(el) {
-    const { chore, ps } = el.dataset; const slot = Number(el.dataset.slot);
-    const existing = state.done.find((d) => d.chore_id === chore && d.period_start === ps && d.slot === slot);
-    return existing
-      ? run(sb.from('chore_done').delete().eq('chore_id', chore).eq('period_start', ps).eq('slot', slot), 'Ongedaan gemaakt')
-      : run(sb.from('chore_done').insert({ chore_id: chore, period_start: ps, slot }), 'Top, afgevinkt');
+  // — afvaldienst —
+  afvalruilform(el) {
+    const week = el.dataset.week, busy = duty(afvalWeek(week)).map((d) => d.id);
+    const opts = state.members.filter((m) => !busy.includes(m.id)).map((m) => `<option value="${m.id}">${esc(m.name)}${m.room ? ` (kamer ${m.room})` : ''}</option>`).join('');
+    $('#afvalruil').innerHTML = `<form data-form="afvalruil" data-week="${week}"><select name="to" aria-label="Met wie ruilen?"><option value="">Iedereen (wie het eerst accepteert)</option>${opts}</select>
+      <div class="row wrap"><button class="primary">Vraag ruil aan</button><button type="button" data-act="afvalruilclose">Annuleren</button></div></form>`;
   },
-  swapform(el) {
-    const { chore, ps, slot } = el.dataset;
-    const box = document.getElementById(`sw-${chore}-${slot}`);
-    const opts = state.members.filter((m) => m.id !== state.me.id).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
-    box.innerHTML = `<form data-form="swap" data-chore="${chore}" data-ps="${ps}" data-slot="${slot}"><select name="to" aria-label="Met wie ruilen?">${opts}</select>
-      <div class="row wrap"><button class="primary">Vraag ruil aan</button><button type="button" data-act="swapclose">Annuleren</button></div></form>`;
+  afvalruilclose() { render(); },
+  async afvalswap(el) {
+    const ok = await run(sb.rpc('afval_respond_swap', { p_id: el.dataset.id, p_action: el.dataset.ans }),
+      { accept: 'Geruild', decline: 'Geweigerd', cancel: 'Ingetrokken' }[el.dataset.ans]);
+    if (ok && el.dataset.ans !== 'cancel') notify('afvalruil', { id: el.dataset.id });
   },
-  swapclose(el) { el.closest('form').remove(); },
-  async swap(el) {
-    const ok = await run(sb.rpc('respond_swap', { p_id: el.dataset.id, p_action: el.dataset.ans }), { accept: 'Beurt overgenomen', decline: 'Geweigerd', cancel: 'Ingetrokken' }[el.dataset.ans]);
-    if (ok && el.dataset.ans !== 'cancel') notify('swap', { id: el.dataset.id });
-  },
-  move(el) { return run(sb.rpc('move_rotation', { p_chore: el.dataset.chore, p_member: el.dataset.member, p_dir: Number(el.dataset.dir) })); },
-  delchore(el) { if (confirm('Taak en rooster verwijderen?')) return run(sb.from('chores').delete().eq('id', el.dataset.id), 'Taak verwijderd'); },
   admin(el) { return run(sb.rpc('set_admin', { p_member: el.dataset.id, p_value: el.dataset.val === 'true' })); },
   rmmember(el) { if (confirm(`${memberName(el.dataset.id)} uit het huis verwijderen?`)) return run(sb.from('members').delete().eq('id', el.dataset.id), 'Verwijderd'); },
 };
@@ -447,6 +575,7 @@ document.addEventListener('click', (e) => {
   if (el && actions[el.dataset.act]) actions[el.dataset.act](el);
 });
 addEventListener('hashchange', () => { const t = location.hash.slice(1); if (TABS.includes(t) && t !== state.tab && state.me) setTab(t); });
+addEventListener('scroll', () => $('#top').classList.toggle('scrolled', scrollY > 6), { passive: true });
 
 document.addEventListener('submit', async (e) => {
   const f = e.target.closest('form[data-form]'); if (!f) return;
@@ -457,11 +586,14 @@ document.addEventListener('submit', async (e) => {
     const kind = f.dataset.form;
     if (kind === 'create' || kind === 'join') {
       const r = kind === 'create'
-        ? await sb.rpc('create_household', { p_household: v.household, p_name: v.name, p_emoji: v.emoji })
-        : await sb.rpc('join_household', { p_code: v.code, p_name: v.name, p_emoji: v.emoji });
+        ? await sb.rpc('create_household', { p_household: v.household, p_name: v.name })
+        : await sb.rpc('join_household', { p_code: v.code, p_name: v.name });
       if (r.error) return toast(r.error.message);
+      const room = await sb.rpc('set_room', { p_room: Number(v.room) });
+      if (room.error) toast(room.error.message + '. Kies een andere kamer onder Profiel.');
+      state.tab = 'home'; history.replaceState(null, '', '#home'); // code niet in de adresbalk laten staan
       await loadAll(); state.push = await detectPush(); render();
-      toast(kind === 'create' ? 'Huis aangemaakt. De code voor huisgenoten staat in tab Ik.' : 'Aangesloten');
+      toast(kind === 'create' ? 'Huis opgezet. Deel de uitnodigingslink via Profiel.' : 'Welkom in V70');
     } else if (kind === 'out') {
       const status = btn?.value || 'wants';
       const ok = await run(sb.from('members').update({
@@ -477,16 +609,11 @@ document.addEventListener('submit', async (e) => {
       const old = state.dinners.find((x) => x.day === day);
       const ok = await run(sb.from('dinners').upsert({ day, menu: v.menu || null, cook_id: v.cook || null }, { onConflict: 'household_id,day' }), 'Opgeslagen');
       if (ok && v.menu && (v.menu !== old?.menu || (v.cook || null) !== (old?.cook_id || null))) notify('dinner', { day });
-    } else if (kind === 'chore') {
-      await run(sb.rpc('create_chore', { p_name: v.name, p_emoji: v.emoji, p_start: v.start, p_period: Number(v.period), p_team: Number(v.team) }), 'Taak toegevoegd');
-    } else if (kind === 'swap') {
-      const s = await run(sb.from('swap_requests').insert({ chore_id: f.dataset.chore, period_start: f.dataset.ps, slot: Number(f.dataset.slot), to_member: v.to }).select('id').single(), 'Ruilverzoek verstuurd');
-      if (s) notify('swap', { id: s.id });
-    } else if (kind === 'override') {
-      const c = state.chores.find((x) => x.id === f.dataset.chore);
-      await run(sb.from('chore_overrides').upsert(
-        { chore_id: c.id, period_start: periodStart(c, curPeriod(c)), slot: Number(v.slot || 0), member_id: v.member, reason: 'handmatig' },
-        { onConflict: 'chore_id,period_start,slot' }), 'Beurt aangepast');
+    } else if (kind === 'room') {
+      await run(sb.rpc('set_room', { p_room: Number(v.room) }), `Kamer ${v.room} opgeslagen`);
+    } else if (kind === 'afvalruil') {
+      const id = await run(sb.rpc('afval_request_swap', { p_week: f.dataset.week, p_to: v.to || null }), 'Ruilverzoek verstuurd');
+      if (id) notify('afvalruil', { id });
     }
   } finally { if (btn?.isConnected) btn.disabled = false; }
 });
@@ -498,11 +625,12 @@ document.addEventListener('submit', async (e) => {
   try {
     state.session = await ensureSession();
     await loadAll(); render(); subscribe();
+    autoLocate();
     state.push = await detectPush(); if (state.tab === 'ik') render();
     if (state.push === 'on' && state.me) currentSub().then((s) => s && saveSub(s)); // server-kant up-to-date houden
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSoon(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshSoon(); autoLocate(); } });
   } catch (err) {
-    $('#view').innerHTML = `<div class="card"><b>Kan niet verbinden</b><p class="muted">${esc(err.message || err)}</p>
-      <button onclick="location.reload()">Opnieuw proberen</button></div>`;
+    $('#view').innerHTML = `<section class="welcome"><div class="logo">V70</div><div class="card"><b>Kan niet verbinden</b><p class="muted">${esc(err.message || err)}</p>
+      <button class="primary" onclick="location.reload()">Opnieuw proberen</button></div></section>`;
   }
 })();

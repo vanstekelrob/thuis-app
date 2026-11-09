@@ -3,3 +3,9 @@ supabase/.branches/
 supabase/functions/.env
 .env
 node_modules/
+
+# Impeccable-werkbestanden (schetsen, schermafbeeldingen, lokale cache)
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/hook.cache.json
+.impeccable/config.json

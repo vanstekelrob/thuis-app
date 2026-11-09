@@ -41,3 +41,20 @@ import { readFileSync } from 'node:fs';
 assert.equal(readFileSync(new URL('../supabase/functions/notify/rota.js', import.meta.url), 'utf8'),
   readFileSync(new URL('../app/rota.js', import.meta.url), 'utf8'), 'kopieer app/rota.js naar supabase/functions/notify/rota.js');
 console.log('✓ rota.js-kopie gelijk');
+
+// Afvaldienst: week van di 10/11 = kamer 5+6, daarna schuift het door; 17+1 en 2+3 na de ronde
+const { afvalWeek, afvalWeekStart, afvalRooms } = await import('../app/rota.js');
+assert.equal(afvalWeek('2026-11-10'), 0);
+assert.equal(afvalWeek('2026-11-16'), 0, 'maandag hoort nog bij de week');
+assert.equal(afvalWeek('2026-11-17'), 1);
+assert.equal(afvalWeek('2026-11-09'), -1);
+assert.equal(afvalWeekStart(1), '2026-11-17');
+assert.deepEqual(afvalRooms(0), [5, 6]);
+assert.deepEqual(afvalRooms(1), [7, 8]);
+assert.deepEqual(afvalRooms(6), [17, 1]);
+assert.deepEqual(afvalRooms(7), [2, 3]);
+assert.deepEqual(afvalRooms(-1), [3, 4]);
+const afvalCount = new Map();
+for (let w = 0; w < 17; w++) afvalRooms(w).forEach((r) => afvalCount.set(r, (afvalCount.get(r) || 0) + 1));
+assert.ok(afvalCount.size === 17 && [...afvalCount.values()].every((n) => n === 2), 'in 17 weken elke kamer 2x');
+console.log('✓ afvaldienst-tests geslaagd');

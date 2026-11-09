@@ -150,8 +150,49 @@ assert.equal((await as(B, `select * from push_subscriptions`)).length, 1);
 for (let n = 5; n <= 19; n++) await as(uid(n), `select join_household($1, $2)`, [code, `Huisgenoot ${n}`]);
 assert.equal((await as(A, `select count(*)::int as n from chore_rotation`))[0].n, 17);
 
+// ── Afvaldienst: kamers en ruilen ──
+const q1 = async (sql, p = []) => (await db.query(sql, p)).rows[0];
+const { ws, r0, r1, n0, n1 } = await q1(`select afval_week_start(afval_today()) ws, afval_room(afval_week_start(afval_today()), 0) r0,
+  afval_room(afval_week_start(afval_today()), 1) r1, afval_room(afval_week_start(afval_today()) + 7, 0) n0, afval_room(afval_week_start(afval_today()) + 7, 1) n1`);
+assert.deepEqual([await q1(`select afval_room('2026-11-10', 0) a, afval_room('2026-11-10', 1) b`)].map((x) => [x.a, x.b])[0], [5, 6], 'start = kamer 5+6');
+assert.deepEqual(Object.values(await q1(`select afval_room('2026-12-22', 0) a, afval_room('2026-12-22', 1) b`)), [17, 1], 'na de ronde 17+1');
+const [E, F] = [uid(5), uid(6)];
+await as(A, `select set_room($1)`, [r0]);
+await as(B, `select set_room($1)`, [r1]);
+await as(E, `select set_room($1)`, [n0]);
+await as(F, `select set_room($1)`, [n1]);
+await fails(as(uid(7), `select set_room($1)`, [r0]), /al bezet/);
+await fails(as(uid(7), `select set_room(18)`), /1 t\/m 17/);
+await as(C, `select set_room($1)`, [r0]); // ander huis: zelfde kamernummer mag
+await fails(as(null, `select set_room(3)`), /permission denied/);
+await fails(as(A, `select afval_holder($1, $2, $3)`, [hidC, ws, r0]), /permission denied/);
+const hidA = (await as(A, `select household_id from members where id = $1`, [A]))[0].household_id;
+const holder = async (week, room) => (await q1(`select afval_holder($1, $2::date, $3) h`, [hidA, week, room])).h;
+assert.equal(await holder(ws, r0), A);
+
+// Verzoek aan iedereen: partner en ander huis kunnen niet, eerste buur wel
+const [{ id: open }] = await as(A, `select afval_request_swap($1::date) as id`, [ws]);
+await fails(as(A, `select afval_request_swap($1::date)`, [ws]), /al een open ruilverzoek/);
+await fails(as(A, `select afval_request_swap($1::date + 14)`, [ws]), /geen afvaldienst/);
+await fails(as(B, `select afval_respond_swap($1, 'accept')`, [open]), /zelf al afvaldienst/);
+await fails(as(C, `select afval_respond_swap($1, 'accept')`, [open]), /niet gevonden/);
+await fails(as(B, `insert into afval_overrides(week_start, room, member_id) values ($1, $2, $3)`, [ws, r0, B]), /row-level security/);
+const [{ mine }] = await as(E, `select afval_respond_swap($1, 'accept') as mine`, [open]);
+assert.equal(mine.toISOString?.().slice(0, 10) ?? mine, (await q1(`select ($1::date + 7)::text d`, [ws])).d, 'E ruilt zijn volgende week');
+assert.equal(await holder(ws, r0), E, 'E doet nu de week van A, met B');
+assert.equal(await holder((await q1(`select ($1::date + 7)::text d`, [ws])).d, n0), A, 'A doet de week van E, met F');
+await fails(as(F, `select afval_respond_swap($1, 'accept')`, [open]), /al afgehandeld/);
+
+// Verzoek aan één persoon: alleen die mag reageren
+const [{ id: direct }] = await as(B, `select afval_request_swap($1::date, $2) as id`, [ws, uid(8)]);
+await fails(as(uid(9), `select afval_respond_swap($1, 'accept')`, [direct]), /niet toegestaan/);
+await fails(as(B, `select afval_request_swap($1::date, $2)`, [ws, E]), /al een open|niet ruilen/);
+await as(uid(8), `select afval_respond_swap($1, 'decline')`, [direct]);
+assert.equal((await as(B, `select status from afval_swaps where id = $1`, [direct]))[0].status, 'declined');
+assert.equal((await as(C, `select * from afval_swaps`)).length, 0, 'ander huis ziet niets');
+
 // ── Realtime-publicatie compleet ──
 const pub = (await db.query(`select tablename from pg_publication_tables where pubname = 'supabase_realtime'`)).rows.map((r) => r.tablename).sort();
-assert.deepEqual(pub, ['activities', 'activity_rsvps', 'chore_done', 'chore_overrides', 'chore_rotation', 'chores', 'dinner_rsvps', 'dinners', 'members', 'swap_requests']);
+assert.deepEqual(pub, ['activities', 'activity_rsvps', 'afval_overrides', 'afval_swaps', 'chore_done','chore_overrides', 'chore_rotation', 'chores', 'dinner_rsvps', 'dinners', 'members', 'swap_requests']);
 
 console.log('✓ alle RLS/RPC-tests geslaagd');
