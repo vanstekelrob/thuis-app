@@ -2,7 +2,7 @@
 
 Gratis huis-app (PWA) voor een groot huis: beurtenrooster met ruilen en afvinken, wie is er thuis, wie wil er uit, activiteiten, wie eet er mee. Met echte pushmeldingen.
 
-**App:** https://robvanstekelenburg.github.io/thuis-app/
+**App:** https://vanstekelrob.github.io/thuis-app/
 
 ## Hoe het werkt
 
@@ -23,9 +23,9 @@ Meldingen: *morgen ben jij aan de beurt*, *vandaag laatste dag* (als je nog niet
 3. **Access token**: Supabase → Account → *Access Tokens* → nieuwe token. Kies als dat kan een token met alleen rechten op dit project.
 4. Zet ze in GitHub (in je eigen terminal; plak de token als erom gevraagd wordt):
    ```bash
-   gh secret set SUPABASE_ACCESS_TOKEN -R robvanstekelenburg/thuis-app
-   gh variable set SUPABASE_PROJECT_REF -R robvanstekelenburg/thuis-app --body JOUW-PROJECT-REF
-   gh workflow run setup.yml -R robvanstekelenburg/thuis-app
+   gh secret set SUPABASE_ACCESS_TOKEN -R vanstekelrob/thuis-app
+   gh variable set SUPABASE_PROJECT_REF -R vanstekelrob/thuis-app --body JOUW-PROJECT-REF
+   gh workflow run setup.yml -R vanstekelrob/thuis-app
    ```
 5. De workflow **Supabase instellen** zet automatisch klaar: database en beveiliging, anonieme login, push-sleutels, de Edge Function, en deployt daarna de app opnieuw. Duurt ~2 minuten.
 6. Open de app op je telefoon:
