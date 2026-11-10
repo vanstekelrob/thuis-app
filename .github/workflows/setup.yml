@@ -50,10 +50,10 @@ jobs:
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: |
-          supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" \
+          supabase secrets set --yes --project-ref "$SUPABASE_PROJECT_REF" \
             "VAPID_PUBLIC_KEY=$VAPID_PUBLIC_KEY" "VAPID_PRIVATE_KEY=$VAPID_PRIVATE_KEY" "VAPID_SUBJECT=$VAPID_SUBJECT"
       - name: Edge Function 'notify' deployen
-        run: supabase functions deploy notify --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+        run: supabase functions deploy notify --yes --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
 
   deploy:
     needs: supabase
