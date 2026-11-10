@@ -12,13 +12,14 @@ const store = {
 };
 
 // Het overzicht is altijd het startscherm; elk onderdeel heeft een vak op het overzicht.
-const TABS = ['home', 'afval', 'thuis', 'uit', 'activiteiten', 'eten', 'ik'];
-const TAB_LABEL = { home: 'Overzicht', afval: 'Afvaldienst', thuis: 'Wie is thuis', uit: 'Uit', activiteiten: 'Activiteiten', eten: 'Eten', ik: 'Profiel' };
+const TABS = ['home', 'afval', 'thuis', 'uit', 'eten', 'ik'];
+const TAB_LABEL = { home: 'Overzicht', afval: 'Afvaldienst', thuis: 'Wie is thuis', uit: 'Activiteiten & uitgaan', eten: 'Eten', ik: 'Profiel' };
+const tabFromHash = () => { const t = location.hash.slice(1); return t === 'activiteiten' ? 'uit' : TABS.includes(t) ? t : null; }; // oude meldingen linken nog naar #activiteiten
 const state = {
-  tab: TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home',
+  tab: tabFromHash() || 'home',
   push: 'unknown', // unconfigured | unsupported | needs-install | denied | off | on
   me: null, household: null, secret: null, session: null,
-  members: [], afvalOverrides: [], afvalSwaps: [],
+  members: [], afvalOverrides: [], afvalSwaps: [], pokes: [],
   activities: [], actRsvps: [], dinners: [], dinRsvps: [],
 };
 
@@ -40,7 +41,6 @@ function whenShort(ts) {
   if (iso(d) === addIso(today(), 1)) return 'morgen';
   return `${DAYS[d.getDay()]} ${hhmm(d)}`;
 }
-const timeFmt = (ts) => (ts ? new Date(ts).toLocaleString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const ago = (ts) => {
   const m = Math.round((Date.now() - new Date(ts)) / 60000);
   return m < 1 ? 'zojuist' : m < 60 ? `${m} min geleden` : m < 1440 ? `${Math.round(m / 60)} uur geleden` : `${Math.round(m / 1440)} d geleden`;
@@ -50,7 +50,6 @@ function toast(msg) {
   clearTimeout(toast.id); toast.id = setTimeout(() => t.classList.remove('show'), 2600);
 }
 const ZONES = { home: 'thuis', nearby: 'in de buurt', away: 'weg', unknown: 'onbekend' };
-const OUT_HOURS = 12; // "wil uit" verloopt vanzelf, anders blijft het dagen staan
 const outActive = (m) => m.out_status !== 'none' && (!m.out_until || new Date(m.out_until) > new Date());
 const memberName = (id) => state.members.find((m) => m.id === id)?.name || '?';
 const names = (ids, max = 6) => {
@@ -101,20 +100,20 @@ async function ensureSession() {
 
 async function loadAll() {
   const t = today();
-  const actSince = new Date(Date.now() - 6 * 3600e3).toISOString(); // activiteiten van vandaag blijven nog even staan
   const res = await Promise.all([
     sb.from('members').select('*').order('created_at'),
     sb.from('afval_overrides').select('*').gte('week_start', afvalWeekStart(curWeek())),
     sb.from('afval_swaps').select('*').eq('status', 'open').gte('week_start', afvalWeekStart(curWeek())),
-    sb.from('activities').select('*').or(`starts_at.is.null,starts_at.gte.${actSince}`).order('starts_at', { nullsFirst: false }).limit(50),
+    sb.from('activities').select('*').or(`day.is.null,day.gte.${t}`).order('day', { nullsFirst: false }).order('starts_at', { nullsFirst: true }).limit(60),
     sb.from('activity_rsvps').select('*'),
     sb.from('dinners').select('*').gte('day', t).order('day').limit(14),
     sb.from('dinner_rsvps').select('*'),
+    sb.from('out_pokes').select('*').eq('day', t),
   ]);
   const err = res.find((r) => r.error)?.error;
   if (err) throw err;
-  const [m, ov, sw, a, ar, dn, dr] = res.map((x) => x.data);
-  Object.assign(state, { members: m, afvalOverrides: ov, afvalSwaps: sw, activities: a, actRsvps: ar, dinners: dn, dinRsvps: dr });
+  const [m, ov, sw, a, ar, dn, dr, pk] = res.map((x) => x.data);
+  Object.assign(state, { members: m, afvalOverrides: ov, afvalSwaps: sw, activities: a, actRsvps: ar, dinners: dn, dinRsvps: dr, pokes: pk });
   state.me = state.members.find((x) => x.id === state.session.user.id) || null;
   if (state.me) {
     const [h, sec] = await Promise.all([sb.from('households').select('*').maybeSingle(), sb.from('member_secrets').select('token').maybeSingle()]);
@@ -131,7 +130,7 @@ function refreshSoon() {
 
 function subscribe() {
   const ch = sb.channel('huis');
-  ['members', 'afval_overrides', 'afval_swaps', 'activities', 'activity_rsvps', 'dinners', 'dinner_rsvps']
+  ['members', 'afval_overrides', 'afval_swaps', 'activities', 'activity_rsvps', 'dinners', 'dinner_rsvps', 'out_pokes']
     .forEach((table) => ch.on('postgres_changes', { event: '*', schema: 'public', table }, refreshSoon));
   ch.subscribe((status) => $('#conn').classList.toggle('live', status === 'SUBSCRIBED'));
 }
@@ -245,7 +244,13 @@ async function forgetHome() {
 // ───────── Overzicht ─────────
 const dinnerToday = () => state.dinners.find((x) => x.day === today());
 const eaters = (d) => (d ? state.dinRsvps.filter((x) => x.dinner_id === d.id && x.answer === 'mee').reduce((s, x) => s + 1 + x.guests, 0) : 0);
-const nextActivity = () => state.activities.find((a) => a.starts_at && new Date(a.starts_at) > Date.now() - 2 * 3600e3);
+const actDay = (a) => a.day || (a.starts_at ? iso(new Date(a.starts_at)) : null);
+// Kort: "20:00" vandaag, "morgen", "do 20:00"; zonder tijd alleen de dag.
+const actWhen = (a) => (a.starts_at ? whenShort(a.starts_at) : actDay(a) === today() ? 'vandaag' : dayLabel(actDay(a)));
+// Eerstvolgende activiteit met datum (een activiteit met tijd telt tot 2 uur na de start).
+const nextActivity = () => state.activities.find((a) => actDay(a) && (a.starts_at ? new Date(a.starts_at) > Date.now() - 2 * 3600e3 : actDay(a) >= today()));
+// Porren die jij vandaag kreeg en nog niet wegtikte.
+const pokesForMe = () => state.pokes.filter((p) => p.to_member === state.me.id && !(store.get('pornee') || '').includes(p.id));
 const actMee = (a) => state.actRsvps.filter((r) => r.activity_id === a.id && r.answer === 'mee').length;
 
 // Het bord: wat er nu en vandaag speelt. lvl 0 = nu (amber), 1 = straks, 2 = later.
@@ -265,9 +270,11 @@ function boardRows() {
   }
   const d = dinnerToday(), n = eaters(d);
   if (d?.menu || n) rows.push({ k: 'eten', lvl: 1, t: 'vanavond', w: d?.menu ? `Eten · ${d.menu}` : 'Eten', who: `${n} mee`, tab: 'eten' });
+  if (!outActive(me)) pokesForMe().forEach((p) =>
+    rows.push({ k: 'por' + p.id, lvl: 0, t: 'nu', w: 'Mee uit?', who: `${memberName(p.from_member)} port je`, tab: 'uit' }));
   const a = nextActivity();
-  if (a && new Date(a.starts_at) - Date.now() < 7 * 864e5) {
-    rows.push({ k: 'act' + a.id, lvl: iso(new Date(a.starts_at)) === t ? 1 : 2, t: whenShort(a.starts_at), w: a.title, who: `${actMee(a)} mee`, tab: 'activiteiten' });
+  if (a && actDay(a) <= addIso(t, 6)) {
+    rows.push({ k: 'act' + a.id, lvl: actDay(a) === t ? 1 : 2, t: actWhen(a), w: a.title, who: `${actMee(a)} mee`, tab: 'uit' });
   }
   return rows.sort((x, y) => x.lvl - y.lvl).slice(0, 4);
 }
@@ -315,11 +322,12 @@ function tiles() {
     <button class="tile" data-act="tab" data-tab="eten"><span class="tt">Eten vanavond</span>
       <span class="v">${eaters(d)}<small>mee</small></span><span class="m">${esc(cook ? `kok: ${cook}` : d?.menu || 'nog geen menu')}</span>
       ${myDinner ? '' : '<span class="m act">jij: nog niet gereageerd</span>'}</button>
-    <button class="tile" data-act="tab" data-tab="uit"><span class="tt">Uit</span>
+    <button class="tile" data-act="tab" data-tab="uit"><span class="tt">Uitgaan vanavond</span>
       <span class="v${out.length ? ' amber' : ''}">${out.length}<small>${out.length === 1 ? 'persoon' : 'personen'}</small></span>
-      <span class="m">${esc(out.length ? names(out.map((m) => m.id), 3) : 'niemand gaat uit')}</span></button>
-    <button class="tile" data-act="tab" data-tab="activiteiten"><span class="tt">Activiteiten</span>
-      <span class="v">${a ? esc(whenShort(a.starts_at)) : 'Niks'}</span>
+      <span class="m">${esc(out.length ? names(out.map((m) => m.id), 3) : 'niemand gaat uit')}</span>
+      ${!outActive(me) && pokesForMe().length ? `<span class="m act">${esc(memberName(pokesForMe()[0].from_member))} port je</span>` : ''}</button>
+    <button class="tile" data-act="tab" data-tab="uit"><span class="tt">Activiteiten</span>
+      <span class="v">${a ? esc(actWhen(a)) : 'Niks'}</span>
       <span class="m">${a ? `${esc(a.title)} · ${actMee(a)} mee` : 'plan iets leuks'}</span></button>`;
 }
 
@@ -406,41 +414,65 @@ function viewThuis() {
 }
 
 function viewUit() {
-  const mine = state.me;
-  const others = state.members.filter((m) => m.id !== mine.id && outActive(m));
-  const list = others.map((m) => `<div class="card"><div class="row">${avatar(m, 'lg')}
+  const me = state.me, out = outActive(me);
+  const pokes = out ? '' : pokesForMe().map((p) => {
+    const from = state.members.find((m) => m.id === p.from_member);
+    return `<div class="card today"><b>${esc(from?.name)}</b> wil vanavond uit${from?.out_place ? ` naar ${esc(from.out_place)}` : ''} en port jou.
+      <div class="row wrap" style="margin-top:8px"><button class="primary" data-act="joinout" data-id="${p.from_member}">Ik ga mee</button>
+      <button data-act="pornee" data-id="${p.id}">Niet vanavond</button></div></div>`;
+  }).join('');
+  const going = state.members.filter(outActive).sort((a, b) => (a.out_status === 'going' ? -1 : 1) - (b.out_status === 'going' ? -1 : 1));
+  const list = going.map((m) => `<div class="row person">${avatar(m, 'lg')}
     <div class="grow"><b>${esc(m.name)}</b> ${m.out_status === 'going' ? 'gaat' : 'wil'} uit${m.out_place ? ` · ${esc(m.out_place)}` : ''}
-    <div class="muted">${esc(m.out_note)}</div></div>
-    <button data-act="joinout" data-id="${m.id}">Ik ook</button></div></div>`).join('') || '<div class="card"><p class="muted">Niemand heeft nu plannen.</p></div>';
-  const now = !outActive(mine) ? 'geen plannen' : mine.out_status === 'wants' ? 'wil uit' : 'gaat uit';
-  return `<h2>Mijn status</h2><div class="card"><form data-form="out">
-    <input name="place" placeholder="Waar? (bijv. stad, bioscoop)" maxlength="80" value="${esc(outActive(mine) ? mine.out_place : '')}">
-    <input name="note" placeholder="Opmerking" maxlength="200" value="${esc(outActive(mine) ? mine.out_note : '')}">
+      ${m.out_note ? `<div class="muted">${esc(m.out_note)}</div>` : ''}</div>
+    ${m.id !== me.id && !out ? `<button data-act="joinout" data-id="${m.id}">Ik ook</button>` : m.id === me.id ? '<span class="chip warn">jij</span>' : ''}</div>`).join('')
+    || '<p class="muted">Nog niemand. Wees de eerste.</p>';
+  const now = !out ? 'geen plannen' : me.out_status === 'wants' ? 'wil uit' : 'gaat uit';
+  const form = `<form data-form="out">
+    <input name="place" placeholder="Waar? (bijv. stad, kroeg)" maxlength="80" value="${esc(out ? me.out_place : '')}">
+    <input name="note" placeholder="Opmerking (hoe laat, wie, …)" maxlength="200" value="${esc(out ? me.out_note : '')}">
     <div class="row wrap"><button class="primary" name="status" value="wants">Ik wil uit</button>
-    <button name="status" value="going">Ik ga uit</button><button name="status" value="none">Niet meer</button></div></form>
-    <p class="muted">Nu: ${now}</p></div>
-    <h2>Huisgenoten</h2>${list}`;
+    <button name="status" value="going">Ik ga uit</button>${out ? '<button name="status" value="none">Toch niet</button>' : ''}</div></form>
+    <p class="muted">Nu: ${now}</p>`;
+  const order = { home: 0, nearby: 1, away: 2, unknown: 3 };
+  const poked = state.pokes.filter((p) => p.from_member === me.id).map((p) => p.to_member);
+  const pokeList = state.members.filter((m) => m.id !== me.id && !outActive(m))
+    .sort((a, b) => order[a.zone] - order[b.zone] || a.name.localeCompare(b.name))
+    .map((m) => `<div class="row person">${avatar(m, m.zone === 'home' ? 'lg' : 'lg off')}<div class="grow"><b>${esc(m.name)}</b><div class="muted">${ZONES[m.zone]}</div></div>
+      ${poked.includes(m.id) ? '<span class="chip">gepord</span>' : `<button data-act="por" data-id="${m.id}">Por</button>`}</div>`).join('');
+  return `${pokes}<h2>Vanavond uit</h2><div class="card">${list}</div>
+    <h2>Jij</h2><div class="card">${form}</div>
+    ${out && pokeList ? `<h2>Wie por je mee?</h2><div class="card">${pokeList}</div>` : ''}
+    <h2>Agenda</h2>${agenda()}
+    <details class="card"${state.activities.length ? '' : ' open'}><summary><b>Activiteit toevoegen</b></summary><form data-form="activity">
+      <input name="title" placeholder="Wat? (huisavond, filmavond, Catan, borrel)" required maxlength="120">
+      <div class="row"><label class="grow">Datum (mag leeg)<input name="day" type="date" min="${today()}"></label>
+        <label class="grow">Tijd (mag leeg)<input name="time" type="time"></label></div>
+      <input name="note" placeholder="Opmerking" maxlength="500"><button class="primary">Toevoegen</button></form></details>`;
+}
+
+// Huisagenda: activiteiten per dag, zonder datum onderaan.
+function agenda() {
+  const card = (a) => {
+    const r = state.actRsvps.filter((x) => x.activity_id === a.id);
+    const my = r.find((x) => x.member_id === state.me.id)?.answer;
+    const mee = r.filter((x) => x.answer === 'mee').map((x) => x.member_id);
+    return `<div class="act"><div class="dayhead"><b>${esc(a.title)}</b><span class="muted">${a.starts_at ? hhmm(new Date(a.starts_at)) : ''}</span></div>
+      ${a.note ? `<div class="muted">${esc(a.note)}</div>` : ''}
+      <div class="row wrap" style="margin:8px 0">${rsvpButtons('arsvp', a.id, my)}</div>
+      <div class="muted"><b>${mee.length}</b> mee${mee.length ? `: ${esc(names(mee, 8))}` : ''}</div>
+      ${a.created_by === state.me.id || state.me.is_admin ? `<button class="ghost" data-act="delact" data-id="${a.id}">Verwijderen</button>` : ''}</div>`;
+  };
+  const days = [...new Set(state.activities.map(actDay).filter(Boolean))].sort();
+  const undated = state.activities.filter((a) => !actDay(a));
+  const groups = days.map((d) => `<div class="card${d === today() ? ' today' : ''}"><div class="agday">${d === today() ? 'Vandaag' : d === addIso(today(), 1) ? 'Morgen' : dayLabel(d)}</div>
+    ${state.activities.filter((a) => actDay(a) === d).map(card).join('')}</div>`).join('');
+  const rest = undated.length ? `<div class="card"><div class="agday">Datum volgt</div>${undated.map(card).join('')}</div>` : '';
+  return groups + rest || '<div class="card"><p class="muted">Nog niets gepland. Voeg hieronder iets toe: huisavond, filmavond, spelletjes…</p></div>';
 }
 
 function rsvpButtons(kind, id, mineAnswer) {
   return ['mee', 'misschien', 'niet'].map((a) => `<button data-act="${kind}" data-id="${id}" data-ans="${a}" class="${mineAnswer === a ? 'on' : ''}">${a[0].toUpperCase() + a.slice(1)}</button>`).join('');
-}
-
-function viewActiviteiten() {
-  const items = state.activities.map((a) => {
-    const r = state.actRsvps.filter((x) => x.activity_id === a.id);
-    const my = r.find((x) => x.member_id === state.me.id)?.answer;
-    const mee = r.filter((x) => x.answer === 'mee').map((x) => x.member_id);
-    return `<div class="card"><div class="dayhead"><b>${esc(a.title)}</b><span class="muted">${timeFmt(a.starts_at)}</span></div>
-      <div class="muted">${esc(a.note)}</div>
-      <div class="row wrap" style="margin:8px 0">${rsvpButtons('arsvp', a.id, my)}</div>
-      <div class="muted"><b>${mee.length}</b> mee: ${esc(names(mee, 8))}</div>
-      ${a.created_by === state.me.id || state.me.is_admin ? `<button data-act="delact" data-id="${a.id}">Verwijderen</button>` : ''}</div>`;
-  }).join('') || '<div class="card"><p class="muted">Nog geen activiteiten. Voeg er een toe: film, spelletjes, klussen…</p></div>';
-  return `<h2>Nieuwe activiteit</h2><div class="card"><form data-form="activity">
-    <input name="title" placeholder="Wat? (filmavond, Catan, tuin opruimen)" required maxlength="120">
-    <input name="starts_at" type="datetime-local"><input name="note" placeholder="Opmerking" maxlength="500"><button class="primary">Toevoegen</button></form></div>
-    <h2>Gepland</h2>${items}`;
 }
 
 function viewEten() {
@@ -495,7 +527,7 @@ function viewIk() {
     ${state.me.is_admin ? adminPanel() : ''}`;
 }
 
-const VIEWS = { home: viewHome, afval: viewAfval, thuis: viewThuis, uit: viewUit, activiteiten: viewActiviteiten, eten: viewEten, ik: viewIk };
+const VIEWS = { home: viewHome, afval: viewAfval, thuis: viewThuis, uit: viewUit, eten: viewEten, ik: viewIk };
 
 function render(skipIfBusy = false) {
   const onboarding = !state.me;
@@ -521,7 +553,8 @@ async function ensureDinner(day) {
   if (r.error) { toast(r.error.message); return null; }
   return r.data;
 }
-const outUntil = () => new Date(Date.now() + OUT_HOURS * 3600e3).toISOString();
+// "Uit" geldt voor vanavond en verloopt om 06:00 de volgende ochtend.
+const outUntil = () => { const d = new Date(); if (d.getHours() >= 6) d.setDate(d.getDate() + 1); d.setHours(6, 0, 0, 0); return d.toISOString(); };
 function setTab(tab) { state.tab = tab; history.replaceState(null, '', '#' + tab); render(); scrollTo(0, 0); }
 
 const actions = {
@@ -540,6 +573,11 @@ const actions = {
     const o = state.members.find((m) => m.id === el.dataset.id);
     if (await run(sb.from('members').update({ out_status: 'going', out_place: o.out_place, out_note: o.out_note, out_until: o.out_until || outUntil() }).eq('id', state.me.id), 'Top, je gaat mee')) notify('out');
   },
+  async por(el) {
+    const p = await run(sb.from('out_pokes').insert({ to_member: el.dataset.id }).select('id').single(), `${memberName(el.dataset.id)} gepord`);
+    if (p) notify('por', { id: p.id });
+  },
+  pornee(el) { store.set('pornee', `${store.get('pornee') || ''} ${el.dataset.id}`.slice(-2000)); render(); },
   arsvp(el) { return run(sb.from('activity_rsvps').upsert({ activity_id: el.dataset.id, answer: el.dataset.ans }, { onConflict: 'activity_id,member_id' })); },
   delact(el) { if (confirm('Activiteit verwijderen?')) return run(sb.from('activities').delete().eq('id', el.dataset.id), 'Verwijderd'); },
   async drsvp(el) {
@@ -574,7 +612,7 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (el && actions[el.dataset.act]) actions[el.dataset.act](el);
 });
-addEventListener('hashchange', () => { const t = location.hash.slice(1); if (TABS.includes(t) && t !== state.tab && state.me) setTab(t); });
+addEventListener('hashchange', () => { const t = tabFromHash(); if (t && t !== state.tab && state.me) setTab(t); });
 addEventListener('scroll', () => $('#top').classList.toggle('scrolled', scrollY > 6), { passive: true });
 
 document.addEventListener('submit', async (e) => {
@@ -602,7 +640,8 @@ document.addEventListener('submit', async (e) => {
       }).eq('id', state.me.id), 'Status bijgewerkt');
       if (ok && status !== 'none') notify('out');
     } else if (kind === 'activity') {
-      const a = await run(sb.from('activities').insert({ title: v.title, note: v.note || null, starts_at: v.starts_at ? new Date(v.starts_at).toISOString() : null }).select('id').single(), 'Toegevoegd');
+      const day = v.day || (v.time ? today() : null); // alleen een tijd = vandaag
+      const a = await run(sb.from('activities').insert({ title: v.title, note: v.note || null, day, starts_at: day && v.time ? new Date(`${day}T${v.time}`).toISOString() : null }).select('id').single(), 'Toegevoegd');
       if (a) notify('activity', { id: a.id });
     } else if (kind === 'dinner') {
       const day = f.dataset.day;

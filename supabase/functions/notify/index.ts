@@ -1,5 +1,5 @@
 // Edge Function 'notify': stuurt Web Push naar huisgenoten.
-//  - Vanuit de app (gebruikers-JWT): { type: 'out' | 'activity' | 'dinner' | 'swap' | 'test', id?, day? }
+//  - Vanuit de app (gebruikers-JWT): { type: 'out' | 'por' | 'activity' | 'dinner' | 'afvalruil' | 'test', id?, day? }
 //    De tekst wordt hier uit de database opgebouwd, dus de app kan geen willekeurige berichten sturen.
 //  - Vanuit GitHub Actions (header x-service-key = secret key): { type: 'rota' } → beurt-herinneringen.
 //  - Vanuit Supabase cron: { type: 'afval' } → herinnering afvaldienst (ma/wo/vr 17:00, max. één keer per dag).
@@ -96,17 +96,23 @@ async function fromApp(body: { type?: string; id?: string; day?: string }, me: M
   const nameOf = async (id: string) => (await admin.from('members').select('name').eq('id', id).maybeSingle()).data?.name ?? '?';
   switch (body.type) {
     case 'test':
-      return send({ members: [me.id] }, { title: '🔔 Meldingen werken', body: `Hoi ${me.name}, dit toestel krijgt meldingen van Thuis.`, tag: 'test', url: './#ik' });
+      return send({ members: [me.id] }, { title: 'Meldingen werken', body: `Hoi ${me.name}, dit toestel krijgt meldingen van V70.`, tag: 'test', url: './#ik' });
     case 'out': {
       if (me.out_status === 'none') return 0;
       const what = me.out_status === 'going' ? 'gaat uit' : 'wil uit';
       const text = [me.out_place, me.out_note].filter(Boolean).join(' · ') || 'Wie gaat er mee?';
-      return toOthers({ title: `${me.emoji} ${me.name} ${what}`, body: text, tag: `out-${me.id}`, url: './#uit' });
+      return toOthers({ title: `${me.name} ${what}`, body: text, tag: `out-${me.id}`, url: './#uit' });
+    }
+    case 'por': {
+      const { data: p } = await admin.from('out_pokes').select('*').eq('id', body.id ?? '').eq('from_member', me.id).maybeSingle();
+      if (!p) return 0;
+      return send({ members: [p.to_member] }, { title: `${me.name} port je`, body: `Ga je vanavond mee uit${me.out_place ? ` naar ${me.out_place}` : ''}?`, tag: `por-${p.id}`, url: './#uit' });
     }
     case 'activity': {
       const { data: a } = await admin.from('activities').select('*').eq('id', body.id ?? '').eq('household_id', me.household_id).maybeSingle();
       if (!a) return 0;
-      return toOthers({ title: `🎲 ${a.title}`, body: `${me.name} plant iets${a.starts_at ? ' · ' + when(a.starts_at) : ''}. Doe je mee?`, tag: `act-${a.id}`, url: './#activiteiten' });
+      const op = a.starts_at ? ' · ' + when(a.starts_at) : a.day ? ' · ' + dayName(a.day) : '';
+      return toOthers({ title: a.title, body: `${me.name} plant iets${op}. Doe je mee?`, tag: `act-${a.id}`, url: './#uit' });
     }
     case 'dinner': {
       const { data: d } = await admin.from('dinners').select('*').eq('day', body.day ?? '').eq('household_id', me.household_id).maybeSingle();

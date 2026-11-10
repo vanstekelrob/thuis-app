@@ -191,8 +191,20 @@ await as(uid(8), `select afval_respond_swap($1, 'decline')`, [direct]);
 assert.equal((await as(B, `select status from afval_swaps where id = $1`, [direct]))[0].status, 'declined');
 assert.equal((await as(C, `select * from afval_swaps`)).length, 0, 'ander huis ziet niets');
 
+// ── Activiteit zonder tijd, porren ──
+const [act2] = await as(B, `insert into activities(title, day) values ('Huisweekend', $1) returning day, starts_at`, [today]);
+assert.equal(act2.starts_at, null, 'tijd mag leeg');
+const [poke] = await as(A, `insert into out_pokes(to_member) values ($1) returning id, day`, [B]);
+assert.ok(poke.id);
+await fails(as(A, `insert into out_pokes(to_member) values ($1)`, [B]), /duplicate key|unique/);
+await fails(as(A, `insert into out_pokes(to_member) values ($1)`, [C]), /row-level security/);
+await fails(as(A, `insert into out_pokes(from_member, to_member) values ($1, $2)`, [B, E]), /row-level security/);
+await fails(as(A, `insert into out_pokes(to_member) values ($1)`, [A]), /check constraint|row-level security/);
+assert.equal((await as(B, `select * from out_pokes`)).length, 1);
+assert.equal((await as(C, `select * from out_pokes`)).length, 0, 'ander huis ziet niets');
+
 // ── Realtime-publicatie compleet ──
 const pub = (await db.query(`select tablename from pg_publication_tables where pubname = 'supabase_realtime'`)).rows.map((r) => r.tablename).sort();
-assert.deepEqual(pub, ['activities', 'activity_rsvps', 'afval_overrides', 'afval_swaps', 'chore_done','chore_overrides', 'chore_rotation', 'chores', 'dinner_rsvps', 'dinners', 'members', 'swap_requests']);
+assert.deepEqual(pub, ['activities', 'activity_rsvps', 'afval_overrides', 'afval_swaps', 'chore_done','chore_overrides', 'chore_rotation', 'chores', 'dinner_rsvps', 'dinners', 'members', 'out_pokes', 'swap_requests']);
 
 console.log('✓ alle RLS/RPC-tests geslaagd');
