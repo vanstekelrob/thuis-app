@@ -42,7 +42,10 @@ const [{ code }] = await as(A, `select create_household('Huize A', 'Anna', '🦊
 assert.match(code, /^[A-HJ-NP-Z2-9]{8}$/, 'join-code: 8 tekens zonder verwarrende tekens');
 assert.equal((await as(A, `select is_admin from members`))[0].is_admin, true, 'maker is beheerder');
 await as(B, `select join_household($1, 'Bob', '')`, [code.toLowerCase()]);
-await as(C, `select create_household('Huize C', 'Cas')`);
+await fails(as(C, `select create_household('Huize C', 'Cas')`), /bestaat al/, 'maar één huis');
+// Een tweede huis bestaat alleen in de test, om te bewijzen dat huizen elkaar niet zien.
+await db.query(`with h as (insert into households(name) values ('Huize C') returning id) insert into members(id, household_id, name, is_admin) select $1, id, 'Cas', true from h`, [C]);
+await db.query(`insert into member_secrets(member_id) values ($1)`, [C]);
 await fails(as(D, `select join_household('ZZZZZZZZ', 'x')`), /onbekende code/);
 await fails(as(D, `select join_household($1, '  ')`, [code]), /naam ontbreekt/);
 await fails(as(null, `select create_household('x', 'y')`), /permission denied/);

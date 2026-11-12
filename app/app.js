@@ -399,9 +399,7 @@ function viewOnboarding() {
         <input name="name" placeholder="Je naam" required maxlength="30" autocomplete="given-name" aria-label="Je naam">
         ${roomSelect()}<button class="primary">Kom erbij</button></form>
       ${code ? '' : '<p class="muted">Geen code? Vraag een huisgenoot om de uitnodigingslink.</p>'}</div>
-    <details><summary>Huis opzetten (alleen de eerste keer)</summary>
-      <form data-form="create"><input name="household" value="Verbs 70" required maxlength="60" aria-label="Naam van het huis">
-        <input name="name" placeholder="Je naam" required maxlength="30" aria-label="Je naam">${roomSelect()}<button>Huis opzetten</button></form></details></section>`;
+    </section>`;
 }
 
 function viewAfval() {
@@ -916,16 +914,14 @@ document.addEventListener('submit', async (e) => {
   try {
     const v = Object.fromEntries(new FormData(f));
     const kind = f.dataset.form;
-    if (kind === 'create' || kind === 'join') {
-      const r = kind === 'create'
-        ? await sb.rpc('create_household', { p_household: v.household, p_name: v.name })
-        : await sb.rpc('join_household', { p_code: v.code, p_name: v.name });
+    if (kind === 'join') {
+      const r = await sb.rpc('join_household', { p_code: v.code, p_name: v.name });
       if (r.error) return toast(r.error.message);
       const room = await sb.rpc('set_room', { p_room: Number(v.room) });
       if (room.error) toast(room.error.message + '. Kies een andere kamer onder Profiel.');
       state.tab = 'home'; history.replaceState(null, '', '#home'); // code niet in de adresbalk laten staan
       await loadAll(); state.push = await detectPush(); render();
-      toast(kind === 'create' ? 'Huis opgezet. Deel de uitnodigingslink via Profiel.' : 'Welkom in V70');
+      toast('Welkom in V70');
     } else if (kind === 'out') {
       const status = btn?.value || 'wants';
       const ok = await run(sb.from('members').update({
