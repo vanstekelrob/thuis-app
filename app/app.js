@@ -95,7 +95,7 @@ const duty = (w) => afvalRooms(w).map((room) => {
 const onDuty = (w, id = state.me.id) => duty(w).some((d) => d.id === id);
 // Eerstvolgende week (vanaf deze) waarin iemand dienst heeft, eventueel zonder week `not`.
 const nextDuty = (id = state.me.id, not = null) => { for (let w = curWeek(); w < curWeek() + 40; w++) if (w !== not && onDuty(w, id)) return w; return null; };
-const duoNames = (w) => duty(w).map((d) => (d.id === state.me.id ? 'jij' : d.id ? memberName(d.id) : `kamer ${d.room} leeg`)).join(' & ');
+const duoNames = (w) => duty(w).map((d) => (d.id === state.me.id ? 'jij' : d.id ? memberName(d.id) : 'niemand')).join(' & ');
 // Ruilverzoeken die jij kunt accepteren: aan jou, of aan iedereen terwijl jij die week vrij bent.
 const swapsForMe = () => state.afvalSwaps.filter((s) => s.from_member !== state.me.id && !(store.get('afvalnee') || '').includes(s.id)
   && (s.to_member === state.me.id || (!s.to_member && !onDuty(afvalWeek(s.week_start)))));
@@ -421,15 +421,15 @@ function viewAfval() {
   const person = (d) => {
     const m = state.members.find((x) => x.id === d.id);
     return `<div class="row person">${m ? avatar(m, 'lg') : '<span class="av lg off">–</span>'}
-      <div class="grow"><b>${m ? esc(m.name) : 'Leeg'}</b><div class="muted">kamer ${d.room}${d.swapped ? ' · geruild' : ''}</div></div>
+      <div class="grow"><b>${m ? esc(m.name) : 'Leeg'}</b>${d.swapped ? '<div class="muted">geruild</div>' : ''}</div>
       ${d.id === me.id ? '<span class="chip warn">jij</span>' : ''}</div>`;
   };
   const partnerNext = next === null ? null : duty(next).find((d) => d.id !== me.id);
   const turn = next === null ? `<p class="muted">${me.room ? 'Nog niet ingeroosterd.' : 'Kies eerst je kamer.'}</p>`
-    : `<div class="dayhead"><b>${weekLabel(next)}</b><span class="muted">met ${partnerNext?.id ? esc(memberName(partnerNext.id)) : `kamer ${partnerNext?.room} (leeg)`}</span></div>
+    : `<div class="dayhead"><b>${weekLabel(next)}</b><span class="muted">met ${partnerNext?.id ? esc(memberName(partnerNext.id)) : 'niemand'}</span></div>
       ${mineOpen.some((s) => afvalWeek(s.week_start) === next) ? '' : `<div id="afvalruil"><button data-act="afvalruilform" data-week="${afvalWeekStart(next)}">Ruilen</button></div>`}`;
   const rows = Array.from({ length: 12 }, (_, k) => w0 + k).map((w) => `<div class="brow${onDuty(w) ? ' lvl0' : ''}">
-    <span>${shortDay(afvalWeekStart(w))}</span><span>${afvalRooms(w).join(' + ')}</span><span>${esc(duoNames(w))}</span></div>`).join('');
+    <span>${shortDay(afvalWeekStart(w))}</span><span>${esc(duoNames(w))}</span><span></span></div>`).join('');
   return `${roomCard}${incoming}${outgoing}
     <h2>Deze week · ${weekLabel(w0)}</h2><div class="card${onDuty(w0) ? ' today' : ''}">${duty(w0).map(person).join('')}
       <p class="muted">Afvalzakken weg · karton legen · glas weg · vaatdoeken wassen en opgevouwen terugleggen</p></div>
@@ -674,24 +674,35 @@ function viewFines() {
 function viewAnytimers() {
   const me = state.me, onMe = state.anytimers.filter((x) => x.debtor === me.id), mine = state.anytimers.filter((x) => x.holder === me.id);
   const who = (id) => esc(memberName(id));
-  const onMeRow = (x) => `<div class="row person"><div class="grow"><b>${who(x.holder)}</b>${x.reason ? ` · ${esc(x.reason)}` : ''}
-      <div class="muted">${{ pending: 'zegt een anytimer op je te hebben', open: 'heeft er een op jou', claimed: 'zet hem nu in!', done: 'gedaan' }[x.status]}</div></div>
-    ${x.status === 'pending' ? `<button class="primary" data-act="anyact" data-id="${x.id}" data-ans="accept">Klopt</button><button data-act="anyact" data-id="${x.id}" data-ans="reject">Klopt niet</button>` : ''}
-    ${x.status === 'claimed' ? `<label class="btn primary">Bewijs sturen<input type="file" accept="image/*" capture="user" data-photo="anytimer" data-id="${x.id}" hidden></label>` : ''}</div>`;
-  const mineRow = (x) => `<div class="row person"><div class="grow"><b>${who(x.debtor)}</b>${x.reason ? ` · ${esc(x.reason)}` : ''}
-      <div class="muted">${{ pending: 'wacht op bevestiging', open: 'klaar om in te zetten', claimed: 'ingezet, wacht op bewijs', done: 'gedaan' }[x.status]}</div>
-      ${x.status === 'done' && x.photo_path ? photoGrid([{ path: x.photo_path, member_id: x.debtor }]) : ''}</div>
-    ${x.status === 'open' ? `<button class="primary" data-act="anyact" data-id="${x.id}" data-ans="claim">Inzetten</button>` : ''}
-    ${['pending', 'open'].includes(x.status) ? `<button class="ghost" data-act="anyact" data-id="${x.id}" data-ans="cancel">Intrekken</button>` : ''}</div>`;
+  const per = (list, key) => [...new Set(list.map((x) => x[key]))].map((id) => [id, list.filter((x) => x[key] === id)]);
+  const times = (n) => (n > 1 ? ` <span class="chip">${n}×</span>` : '');
+  const pend = (x, mine) => `<div class="row person"><div class="grow"><b>${who(mine ? x.debtor : x.holder)}</b>${x.reason ? ` · ${esc(x.reason)}` : ''}
+      <div class="muted">${mine ? 'wacht op bevestiging' : 'zegt een anytimer op je te hebben'}</div></div>
+    ${mine ? `<button class="ghost" data-act="anyact" data-id="${x.id}" data-ans="cancel">Intrekken</button>`
+      : `<button class="primary" data-act="anyact" data-id="${x.id}" data-ans="accept">Klopt</button><button data-act="anyact" data-id="${x.id}" data-ans="reject">Klopt niet</button>`}</div>`;
+  const onMeRows = onMe.filter((x) => x.status === 'pending').map((x) => pend(x, false)).join('')
+    + onMe.filter((x) => x.status === 'claimed').map((x) => `<div class="row person"><div class="grow"><b>${who(x.holder)}</b><div class="muted">zet er een in!</div></div>
+      <label class="btn primary">Bewijs sturen<input type="file" accept="image/*" capture="user" data-photo="anytimer" data-id="${x.id}" hidden></label></div>`).join('')
+    + per(onMe.filter((x) => x.status === 'open'), 'holder').map(([id, xs]) => `<div class="row person"><div class="grow"><b>${who(id)}</b>${times(xs.length)}
+      <div class="muted">heeft er ${xs.length} op jou</div></div></div>`).join('');
+  const mineRows = mine.filter((x) => x.status === 'pending').map((x) => pend(x, true)).join('')
+    + per(mine.filter((x) => ['open', 'claimed'].includes(x.status)), 'debtor').map(([id, xs]) => {
+      const open = xs.filter((x) => x.status === 'open'), claimed = xs.length - open.length;
+      return `<div class="row person"><div class="grow"><b>${who(id)}</b>${times(xs.length)}
+        <div class="muted">${[open.length && `${open.length} klaar om in te zetten`, claimed && `${claimed} ingezet, wacht op bewijs`].filter(Boolean).join(' · ')}</div></div>
+        ${open.length ? `<button class="primary" data-act="anyact" data-id="${open[0].id}" data-ans="claim">Inzetten</button>` : ''}</div>`;
+    }).join('');
+  const doneRow = (x) => `<div class="row person"><div class="grow"><b>${who(x.debtor)}</b><div class="muted">gedaan ${ago(x.done_at)}</div>
+      ${x.photo_path ? photoGrid([{ path: x.photo_path, member_id: x.debtor }]) : ''}</div></div>`;
   const others = state.members.filter((m) => m.id !== me.id);
   return `${onMe.some((x) => x.status === 'claimed') ? '<div class="card today"><b>Er is een anytimer op je ingezet.</b><p class="muted">Drinken, foto maken en als bewijs sturen. Alleen de gever ziet de foto.</p></div>' : ''}
-    <h2>Op jou (${onMe.filter((x) => x.status !== 'done').length})</h2><div class="card">${onMe.filter((x) => x.status !== 'done').map(onMeRow).join('') || '<p class="muted">Niemand heeft er een op jou.</p>'}</div>
-    <h2>Van jou (${mine.filter((x) => x.status !== 'done').length})</h2><div class="card">${mine.filter((x) => x.status !== 'done').map(mineRow).join('') || '<p class="muted">Je hebt er nog geen.</p>'}</div>
+    <h2>Op jou (${onMe.filter((x) => x.status !== 'done').length})</h2><div class="card">${onMeRows || '<p class="muted">Niemand heeft er een op jou.</p>'}</div>
+    <h2>Van jou (${mine.filter((x) => x.status !== 'done').length})</h2><div class="card">${mineRows || '<p class="muted">Je hebt er nog geen.</p>'}</div>
     <details class="card"><summary><b>Anytimer toevoegen</b></summary><form data-form="anytimer">
       <select name="debtor" required aria-label="Op wie"><option value="">Ik heb een anytimer op…</option>${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>
       <input name="reason" maxlength="120" placeholder="Waarvoor? (weddenschap verloren, …)"><button class="primary">Toevoegen</button>
       <p class="muted">De ander moet bevestigen dat het klopt.</p></form></details>
-    ${mine.some((x) => x.status === 'done') ? `<details class="card"><summary>Gedaan (met bewijs)</summary>${mine.filter((x) => x.status === 'done').map(mineRow).join('')}</details>` : ''}`;
+    ${mine.some((x) => x.status === 'done') ? `<details class="card"><summary>Gedaan (met bewijs)</summary>${mine.filter((x) => x.status === 'done').map(doneRow).join('')}</details>` : ''}`;
 }
 
 // ───────── Foto's: verkleinen, uploaden en tonen ─────────
@@ -886,7 +897,7 @@ const actions = {
   // — afvaldienst —
   afvalruilform(el) {
     const week = el.dataset.week, busy = duty(afvalWeek(week)).map((d) => d.id);
-    const opts = state.members.filter((m) => !busy.includes(m.id)).map((m) => `<option value="${m.id}">${esc(m.name)}${m.room ? ` (kamer ${m.room})` : ''}</option>`).join('');
+    const opts = state.members.filter((m) => !busy.includes(m.id)).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
     $('#afvalruil').innerHTML = `<form data-form="afvalruil" data-week="${week}"><select name="to" aria-label="Met wie ruilen?"><option value="">Iedereen (wie het eerst accepteert)</option>${opts}</select>
       <div class="row wrap"><button class="primary">Vraag ruil aan</button><button type="button" data-act="afvalruilclose">Annuleren</button></div></form>`;
   },
