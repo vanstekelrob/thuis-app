@@ -203,8 +203,88 @@ await fails(as(A, `insert into out_pokes(to_member) values ($1)`, [A]), /check c
 assert.equal((await as(B, `select * from out_pokes`)).length, 1);
 assert.equal((await as(C, `select * from out_pokes`)).length, 0, 'ander huis ziet niets');
 
+// ── Wensenlijst: uitgaan, koken, was, mededelingen, prikker, POV, boetes, anytimers ──
+await as(E, `update members set out_status = 'no', out_time = '22:00' where id = $1`, [E]);
+await fails(as(E, `update members set out_status = 'raar' where id = $1`, [E]), /check constraint/);
+const [dinE] = await as(E, `insert into dinners(day) values ($1) on conflict (household_id, day) do update set day = excluded.day returning id`, [today]);
+await as(E, `insert into dinner_rsvps(dinner_id, answer) values ($1, 'kok') on conflict (dinner_id, member_id) do update set answer = 'kok'`, [dinE.id]);
+
+// Was
+await as(E, `insert into laundry(machine, until) values ('was1', now() + interval '1 hour')`);
+await fails(as(F, `insert into laundry(machine, until) values ('was1', now() + interval '1 hour')`), /duplicate key|row-level security/);
+assert.equal((await as(F, `update laundry set member_id = $1, until = now() + interval '1 hour' where machine = 'was1' returning machine`, [F])).length, 0, 'bezette machine niet overnemen');
+await fails(as(F, `insert into laundry(machine, until) values ('was2', now() + interval '5 hours')`), /row-level security/);
+assert.equal((await as(C, `select * from laundry`)).length, 0);
+await as(E, `delete from laundry where machine = 'was1'`);
+
+// Mededelingen
+const [ann] = await as(E, `insert into announcements(body) values ('Feest zaterdag') returning id`);
+await fails(as(E, `insert into announcements(body, created_by) values ('x', $1)`, [F]), /row-level security/);
+assert.equal((await as(C, `select * from announcements`)).length, 0);
+assert.equal((await as(F, `delete from announcements where id = $1 returning id`, [ann.id])).length, 0, 'niet van een ander');
+assert.equal((await as(A, `delete from announcements where id = $1 returning id`, [ann.id])).length, 1, 'beheerder wel');
+
+// Datumprikker
+const [poll] = await as(E, `insert into date_polls(title) values ('Huisweekend') returning id`);
+const [opt] = await as(E, `insert into date_poll_options(poll_id, day) values ($1, $2) returning id`, [poll.id, today]);
+await fails(as(F, `insert into date_poll_options(poll_id, day) values ($1, $2)`, [poll.id, today]), /row-level security/);
+await as(F, `insert into date_poll_votes(option_id, answer) values ($1, 'ja')`, [opt.id]);
+await fails(as(C, `insert into date_poll_votes(option_id, answer) values ($1, 'ja')`, [opt.id]), /row-level security/);
+
+// POV: alleen tijdens de activiteit, eigen map, max. 25, pas na de onthulling zichtbaar voor anderen
+const [povAct] = await as(E, `insert into activities(title, day, starts_at) values ('Feest', $1, now() - interval '1 hour') returning id`, [today]);
+const hidE = (await as(E, `select household_id from members where id = $1`, [E]))[0].household_id;
+const pov = (n, who = E) => as(who, `insert into pov_photos(activity_id, path) values ($1, $2)`, [povAct.id, `${hidE}/pov/${who}/${n}.jpg`]);
+await pov(0);
+await fails(as(E, `insert into pov_photos(activity_id, path) values ($1, $2)`, [povAct.id, `${hidE}/pov/${F}/x.jpg`]), /row-level security/);
+assert.equal((await as(F, `select * from pov_photos`)).length, 0, 'nog niet onthuld');
+assert.equal((await as(E, `select * from pov_photos`)).length, 1, 'eigen foto wel');
+for (let n = 1; n < 25; n++) await pov(n);
+await fails(pov(25), /row-level security/);
+const [later] = await as(E, `insert into activities(title, day) values ('Later', $1::date + 3) returning id`, [today]);
+await fails(as(E, `insert into pov_photos(activity_id, path) values ($1, $2)`, [later.id, `${hidE}/pov/${E}/later.jpg`]), /row-level security/);
+await db.query(`update activities set day = $1::date - 2, starts_at = now() - interval '2 days' where id = $2`, [today, povAct.id]);
+assert.equal((await as(F, `select * from pov_photos`)).length, 25, 'na onthulling ziet het huis het album');
+assert.equal((await as(C, `select * from pov_photos`)).length, 0);
+
+// Boetes: beheerder geeft, alleen de beboete en beheerders zien het
+await fails(as(E, `insert into fines(member_id, amount, reason) values ($1, 5, 'x')`, [F]), /row-level security/);
+const [fine] = await as(A, `insert into fines(member_id, amount, reason) values ($1, 5, 'Afvaldienst niet gedaan') returning id`, [E]);
+assert.equal((await as(E, `select * from fines`)).length, 1);
+assert.equal((await as(F, `select * from fines`)).length, 0, 'andermans boete niet zien');
+assert.equal((await as(E, `update fines set paid_at = now() returning id`)).length, 0, 'zelf niet afvinken');
+await as(A, `update fines set paid_at = now() where id = $1`, [fine.id]);
+await fails(as(E, `select set_house_iban('NL00TEST0000000000', 'Huis')`), /alleen beheerders/);
+await as(A, `select set_house_iban('nl00 test 0000 0000 00', 'Huis V70')`);
+assert.equal((await as(E, `select iban from households`))[0].iban, 'NL00TEST0000000000');
+
+// Anytimers: E heeft er een op F
+const [any] = await as(E, `insert into anytimers(debtor) values ($1) returning id`, [F]);
+await fails(as(E, `insert into anytimers(debtor, status) values ($1, 'open')`, [F]), /row-level security/);
+assert.equal((await as(uid(7), `select * from anytimers`)).length, 0, 'anderen zien niets');
+await fails(as(E, `select anytimer_act($1, 'claim')`, [any.id]), /niet toegestaan/);
+await fails(as(E, `select anytimer_act($1, 'accept')`, [any.id]), /niet toegestaan/);
+await as(F, `select anytimer_act($1, 'accept')`, [any.id]);
+await as(E, `select anytimer_act($1, 'claim')`, [any.id]);
+await fails(as(F, `select anytimer_act($1, 'proof', $2)`, [any.id, `${hidE}/anytimer/${E}/x.jpg`]), /niet toegestaan/);
+await as(F, `select anytimer_act($1, 'proof', $2)`, [any.id, `${hidE}/anytimer/${F}/bewijs.jpg`]);
+assert.equal((await as(E, `select status, photo_path from anytimers`))[0].status, 'done');
+
+// Was-tijdvakken
+await as(E, `insert into laundry_slots(machine, starts_at, ends_at) values ('was1', now() + interval '1 hour', now() + interval '2 hours')`);
+await fails(as(F, `insert into laundry_slots(machine, starts_at, ends_at) values ('was1', now() + interval '90 minutes', now() + interval '3 hours')`), /row-level security/);
+await as(F, `insert into laundry_slots(machine, starts_at, ends_at) values ('was1', now() + interval '2 hours', now() + interval '3 hours')`);
+await as(F, `insert into laundry_slots(machine, starts_at, ends_at) values ('droger1', now() + interval '10 hours', now() + interval '19 hours')`);
+await fails(as(F, `insert into laundry_slots(machine, starts_at, ends_at) values ('was2', now() + interval '1 hour', now() + interval '12 hours')`), /check constraint/);
+await fails(as(F, `insert into laundry_slots(machine, starts_at, ends_at) values ('was2', now() - interval '3 hours', now() - interval '1 hour')`), /row-level security/);
+assert.equal((await as(F, `delete from laundry_slots where member_id = $1 returning id`, [E])).length, 0, 'andermans dibs niet weghalen');
+assert.equal((await as(C, `select * from laundry_slots`)).length, 0);
+await fails(as(E, `select set_house_drive('https://drive.google.com/x')`), /alleen beheerders/);
+await fails(as(A, `select set_house_drive('https://evil.example/x')`), /geen Google Drive/);
+await as(A, `select set_house_drive('https://drive.google.com/drive/folders/abc')`);
+
 // ── Realtime-publicatie compleet ──
 const pub = (await db.query(`select tablename from pg_publication_tables where pubname = 'supabase_realtime'`)).rows.map((r) => r.tablename).sort();
-assert.deepEqual(pub, ['activities', 'activity_rsvps', 'afval_overrides', 'afval_swaps', 'chore_done','chore_overrides', 'chore_rotation', 'chores', 'dinner_rsvps', 'dinners', 'members', 'out_pokes', 'swap_requests']);
+assert.deepEqual(pub, ['activities', 'activity_rsvps', 'afval_overrides', 'afval_swaps', 'announcements', 'anytimers', 'chore_done', 'chore_overrides', 'chore_rotation', 'chores', 'date_poll_options', 'date_poll_votes', 'date_polls', 'dinner_rsvps', 'dinners', 'fines', 'laundry', 'laundry_slots', 'members', 'out_pokes', 'pov_photos', 'swap_requests']);
 
 console.log('✓ alle RLS/RPC-tests geslaagd');

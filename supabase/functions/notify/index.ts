@@ -1,7 +1,8 @@
 // Edge Function 'notify': stuurt Web Push naar huisgenoten.
-//  - Vanuit de app (gebruikers-JWT): { type: 'out' | 'por' | 'activity' | 'dinner' | 'afvalruil' | 'test', id?, day? }
+//  - Vanuit de app (gebruikers-JWT): { type: 'out' | 'por' | 'activity' | 'kok' | 'afvalruil' | 'mededeling' | 'prikker' | 'boete' | 'anytimer' | 'test', id?, day? }
 //    De tekst wordt hier uit de database opgebouwd, dus de app kan geen willekeurige berichten sturen.
 //  - Vanuit GitHub Actions (header x-service-key = secret key): { type: 'rota' } → beurt-herinneringen.
+//  - Vanuit Supabase cron: { type: 'archive' } → oude fotoalbums (na de 5 nieuwste) naar Google Drive.
 //  - Vanuit Supabase cron: { type: 'afval' } → herinnering afvaldienst (ma/wo/vr 17:00, max. één keer per dag).
 import webpush from 'npm:web-push@3.6.7';
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -91,6 +92,35 @@ async function afvalReminder() {
   return { day, week, sent };
 }
 
+// Fotoalbums: per huis blijven de 5 nieuwste ontwikkelde albums in de app; oudere gaan via het Apps Script naar Drive.
+// Per aanroep max. 40 foto's (tijdslimiet); de cron roept 's nachts elk uur aan tot alles over is.
+const KEEP_ALBUMS = 5, BATCH = 40;
+async function archive() {
+  const url = Deno.env.get('DRIVE_SCRIPT_URL'), token = Deno.env.get('DRIVE_SCRIPT_TOKEN');
+  if (!url || !token) return { skipped: 'Drive-script niet ingesteld' };
+  const { data: photos, error } = await admin.from('pov_photos').select('id, household_id, activity_id, member_id, path, created_at').order('created_at');
+  if (error) throw error;
+  const ids = [...new Set((photos ?? []).map((p) => p.activity_id))];
+  if (!ids.length) return { archived: 0 };
+  const { data: acts } = await admin.from('activities').select('id, household_id, title, day, starts_at').in('id', ids);
+  const dayOf = (a: { day: string | null; starts_at: string | null }) => a.day || isoDay(new Date(a.starts_at!));
+  const revealed = (acts ?? []).filter((a) => addIso(dayOf(a), 1) < isoDay(new Date())); // ontwikkeld (dag erna 10:00) en dat is al gisteren of eerder
+  const old = [...new Set(revealed.map((a) => a.household_id))].flatMap((h) =>
+    revealed.filter((a) => a.household_id === h).sort((x, y) => dayOf(y).localeCompare(dayOf(x))).slice(KEEP_ALBUMS));
+  const act = old.sort((x, y) => dayOf(x).localeCompare(dayOf(y)))[0];
+  if (!act) return { archived: 0 };
+  const batch = (photos ?? []).filter((p) => p.activity_id === act.id).slice(0, BATCH);
+  const { data: signed } = await admin.storage.from('v70').createSignedUrls(batch.map((p) => p.path), 3600);
+  const files = batch.map((p, i) => ({ name: `${dayOf(act)} ${String(i + 1).padStart(2, '0')} ${p.id.slice(0, 8)}.jpg`, url: signed?.[i]?.signedUrl })).filter((f) => f.url);
+  const res = await fetch(url, { method: 'POST', body: JSON.stringify({ token, folder: `${dayOf(act)} ${act.title}`, files }) });
+  const out = await res.json().catch(() => ({ ok: false }));
+  if (!out.ok || out.saved !== files.length) return { error: 'Drive-script faalde', out };
+  await admin.storage.from('v70').remove(batch.map((p) => p.path));
+  await admin.from('pov_photos').delete().in('id', batch.map((p) => p.id));
+  await admin.from('activities').update({ drive_url: out.folderUrl }).eq('id', act.id);
+  return { archived: batch.length, activity: act.title };
+}
+
 async function fromApp(body: { type?: string; id?: string; day?: string }, me: Member) {
   const toOthers = (msg: Msg) => send({ household: me.household_id, except: me.id }, msg);
   const nameOf = async (id: string) => (await admin.from('members').select('name').eq('id', id).maybeSingle()).data?.name ?? '?';
@@ -114,11 +144,35 @@ async function fromApp(body: { type?: string; id?: string; day?: string }, me: M
       const op = a.starts_at ? ' · ' + when(a.starts_at) : a.day ? ' · ' + dayName(a.day) : '';
       return toOthers({ title: a.title, body: `${me.name} plant iets${op}. Doe je mee?`, tag: `act-${a.id}`, url: './#uit' });
     }
-    case 'dinner': {
+    case 'kok': {
       const { data: d } = await admin.from('dinners').select('*').eq('day', body.day ?? '').eq('household_id', me.household_id).maybeSingle();
-      if (!d?.menu) return 0;
-      const cook = d.cook_id ? await nameOf(d.cook_id) : null;
-      return toOthers({ title: `🍝 ${dayName(d.day)}: ${d.menu}`, body: `${cook ? cook + ' kookt. ' : ''}Eet je mee?`, tag: `dinner-${d.day}`, url: './#eten' });
+      if (!d) return 0;
+      return toOthers({ title: `${me.name} gaat koken ${dayName(d.day)}`, body: `${d.menu ? d.menu + '. ' : ''}Eet je mee?`, tag: `kok-${d.day}`, url: './#eten' });
+    }
+    case 'mededeling': {
+      const { data: a } = await admin.from('announcements').select('*').eq('id', body.id ?? '').eq('created_by', me.id).maybeSingle();
+      if (!a) return 0;
+      return toOthers({ title: `Mededeling van ${me.name}`, body: a.body.slice(0, 140), tag: `mededeling-${a.id}`, url: './#mededelingen' });
+    }
+    case 'prikker': {
+      const { data: p } = await admin.from('date_polls').select('*').eq('id', body.id ?? '').eq('created_by', me.id).maybeSingle();
+      if (!p) return 0;
+      return toOthers({ title: `Datumprikker: ${p.title}`, body: `${me.name} zoekt een datum. Wanneer kun jij?`, tag: `prikker-${p.id}`, url: './#uit' });
+    }
+    case 'boete': {
+      if (!me.is_admin) return 0;
+      const { data: f } = await admin.from('fines').select('*').eq('id', body.id ?? '').eq('household_id', me.household_id).maybeSingle();
+      if (!f) return 0;
+      return send({ members: [f.member_id] }, { title: `Boete: € ${Number(f.amount).toFixed(2).replace('.', ',')}`, body: f.reason, tag: `boete-${f.id}`, url: './#boetes' });
+    }
+    case 'anytimer': {
+      const { data: a } = await admin.from('anytimers').select('*').eq('id', body.id ?? '').eq('household_id', me.household_id).maybeSingle();
+      if (!a) return 0;
+      const tag = `anytimer-${a.id}`;
+      if (a.status === 'pending' && a.holder === me.id) return send({ members: [a.debtor] }, { title: `${me.name} zegt een anytimer op je te hebben`, body: a.reason || 'Klopt dat? Tik om te bevestigen.', tag, url: './#anytimers' });
+      if (a.status === 'claimed' && a.holder === me.id) return send({ members: [a.debtor] }, { title: `${me.name} zet een anytimer in!`, body: 'Drinken en een foto als bewijs sturen.', tag, url: './#anytimers' });
+      if (a.status === 'done' && a.debtor === me.id) return send({ members: [a.holder] }, { title: `${me.name} heeft de anytimer gedaan`, body: 'Bekijk het bewijs.', tag, url: './#anytimers' });
+      return 0;
     }
     case 'swap': {
       const { data: s } = await admin.from('swap_requests').select('*, chores(name, emoji)').eq('id', body.id ?? '').eq('household_id', me.household_id).maybeSingle();
@@ -196,6 +250,7 @@ Deno.serve(async (req) => {
     if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return json({ error: 'VAPID-sleutels ontbreken' }, 500);
     const body = await req.json().catch(() => ({}));
 
+    if (body.type === 'archive') return json(await archive()); // veilig openbaar: archiveert alleen wat toch al weg moet
     if (body.type === 'afval') return json(await afvalReminder()); // beveiligd door tijdstip + één keer per dag
 
     if (body.type === 'rota') {

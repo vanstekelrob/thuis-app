@@ -43,6 +43,11 @@ typography:
     fontWeight: 700
     lineHeight: 1.05
     fontFeature: "tnum"
+  headline-small:
+    fontFamily: "Barlow Semi Condensed, Barlow, system-ui, sans-serif"
+    fontSize: "24px"
+    fontWeight: 700
+    lineHeight: 1.05
   title:
     fontFamily: "Barlow Semi Condensed, Barlow, system-ui, sans-serif"
     fontSize: "18px"
