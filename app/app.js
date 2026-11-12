@@ -12,16 +12,24 @@ const store = {
 };
 
 // Het overzicht is altijd het startscherm; elk onderdeel heeft een vak op het overzicht.
-const TABS = ['home', 'afval', 'thuis', 'uit', 'eten', 'ik'];
-const TAB_LABEL = { home: 'Overzicht', afval: 'Afvaldienst', thuis: 'Wie is thuis', uit: 'Activiteiten & uitgaan', eten: 'Eten', ik: 'Profiel' };
-const tabFromHash = () => { const t = location.hash.slice(1); return t === 'activiteiten' ? 'uit' : TABS.includes(t) ? t : null; }; // oude meldingen linken nog naar #activiteiten
+const TABS = ['home', 'afval', 'thuis', 'uit', 'eten', 'ik', 'was', 'mededelingen', 'albums', 'boetes', 'anytimers', 'act'];
+const TAB_LABEL = { home: 'Overzicht', afval: 'Afvaldienst', thuis: 'Wie is thuis', uit: 'Activiteiten & uitgaan', eten: 'Eten', ik: 'Profiel',
+  was: 'Was dibsen', mededelingen: 'Mededelingen', albums: "Fotoalbums", boetes: 'Boetes', anytimers: 'Anytimers', act: 'Activiteit' };
+const tabFromHash = () => {
+  const t = location.hash.slice(1);
+  if (t.startsWith('act=')) { state.actId = t.slice(4); return 'act'; }
+  return t === 'activiteiten' ? 'uit' : TABS.includes(t) && t !== 'act' ? t : null;
+}; // oude meldingen linken nog naar #activiteiten
 const state = {
-  tab: tabFromHash() || 'home',
+  tab: 'home', actId: null, outOpen: false,
   push: 'unknown', // unconfigured | unsupported | needs-install | denied | off | on
   me: null, household: null, secret: null, session: null,
-  members: [], afvalOverrides: [], afvalSwaps: [], pokes: [],
+  members: [], afvalOverrides: [], afvalSwaps: [], pokes: [], laundry: [], news: [], polls: [], pollOptions: [], pollVotes: [],
+  povPhotos: [], pastActs: [], fines: [], anytimers: [],
   activities: [], actRsvps: [], dinners: [], dinRsvps: [],
 };
+
+state.tab = tabFromHash() || 'home';
 
 // ───────── Helpers ─────────
 const DAYS = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
@@ -50,7 +58,9 @@ function toast(msg) {
   clearTimeout(toast.id); toast.id = setTimeout(() => t.classList.remove('show'), 2600);
 }
 const ZONES = { home: 'thuis', nearby: 'in de buurt', away: 'weg', unknown: 'onbekend' };
-const outActive = (m) => m.out_status !== 'none' && (!m.out_until || new Date(m.out_until) > new Date());
+const fresh = (m) => !m.out_until || new Date(m.out_until) > new Date();
+const outActive = (m) => ['wants', 'going'].includes(m.out_status) && fresh(m);
+const outNo = (m) => m.out_status === 'no' && fresh(m);
 const memberName = (id) => state.members.find((m) => m.id === id)?.name || '?';
 const names = (ids, max = 6) => {
   const n = ids.map(memberName).filter((x) => x !== '?');
@@ -70,6 +80,7 @@ const svg = (d) => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" 
 const ICON = {
   pin: svg('<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>'),
   refresh: svg('<path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v5h-5"/>'),
+  chevron: svg('<path d="m9 6 6 6-6 6"/>'),
 };
 
 // ───────── Afvaldienst (berekend met rota.js; ruilingen staan in afval_overrides) ─────────
@@ -86,7 +97,7 @@ const onDuty = (w, id = state.me.id) => duty(w).some((d) => d.id === id);
 const nextDuty = (id = state.me.id, not = null) => { for (let w = curWeek(); w < curWeek() + 40; w++) if (w !== not && onDuty(w, id)) return w; return null; };
 const duoNames = (w) => duty(w).map((d) => (d.id === state.me.id ? 'jij' : d.id ? memberName(d.id) : `kamer ${d.room} leeg`)).join(' & ');
 // Ruilverzoeken die jij kunt accepteren: aan jou, of aan iedereen terwijl jij die week vrij bent.
-const swapsForMe = () => state.afvalSwaps.filter((s) => s.from_member !== state.me.id
+const swapsForMe = () => state.afvalSwaps.filter((s) => s.from_member !== state.me.id && !(store.get('afvalnee') || '').includes(s.id)
   && (s.to_member === state.me.id || (!s.to_member && !onDuty(afvalWeek(s.week_start)))));
 
 // ───────── Data ─────────
@@ -109,11 +120,21 @@ async function loadAll() {
     sb.from('dinners').select('*').gte('day', t).order('day').limit(14),
     sb.from('dinner_rsvps').select('*'),
     sb.from('out_pokes').select('*').eq('day', t),
+    sb.from('laundry_slots').select('*').gt('ends_at', new Date().toISOString()).order('starts_at'),
+    sb.from('announcements').select('*').order('created_at', { ascending: false }).limit(40),
+    sb.from('date_polls').select('*').eq('closed', false).order('created_at', { ascending: false }),
+    sb.from('date_poll_options').select('*').order('day'),
+    sb.from('date_poll_votes').select('*'),
+    sb.from('pov_photos').select('*').order('created_at').limit(3000),
+    sb.from('activities').select('*').lt('day', t).order('day', { ascending: false }).limit(40),
+    sb.from('fines').select('*').order('created_at', { ascending: false }),
+    sb.from('anytimers').select('*').order('created_at', { ascending: false }),
   ]);
   const err = res.find((r) => r.error)?.error;
   if (err) throw err;
-  const [m, ov, sw, a, ar, dn, dr, pk] = res.map((x) => x.data);
-  Object.assign(state, { members: m, afvalOverrides: ov, afvalSwaps: sw, activities: a, actRsvps: ar, dinners: dn, dinRsvps: dr, pokes: pk });
+  const [m, ov, sw, a, ar, dn, dr, pk, la, nw, po, opt, pv, ph, past, fi, an] = res.map((x) => x.data);
+  Object.assign(state, { members: m, afvalOverrides: ov, afvalSwaps: sw, activities: a, actRsvps: ar, dinners: dn, dinRsvps: dr, pokes: pk,
+    laundry: la, news: nw, polls: po, pollOptions: opt, pollVotes: pv, povPhotos: ph, pastActs: past, fines: fi, anytimers: an });
   state.me = state.members.find((x) => x.id === state.session.user.id) || null;
   if (state.me) {
     const [h, sec] = await Promise.all([sb.from('households').select('*').maybeSingle(), sb.from('member_secrets').select('token').maybeSingle()]);
@@ -130,7 +151,8 @@ function refreshSoon() {
 
 function subscribe() {
   const ch = sb.channel('huis');
-  ['members', 'afval_overrides', 'afval_swaps', 'activities', 'activity_rsvps', 'dinners', 'dinner_rsvps', 'out_pokes']
+  ['members', 'afval_overrides', 'afval_swaps', 'activities', 'activity_rsvps', 'dinners', 'dinner_rsvps', 'out_pokes', 'laundry_slots',
+    'announcements', 'date_polls', 'date_poll_options', 'date_poll_votes', 'pov_photos', 'fines', 'anytimers']
     .forEach((table) => ch.on('postgres_changes', { event: '*', schema: 'public', table }, refreshSoon));
   ch.subscribe((status) => $('#conn').classList.toggle('live', status === 'SUBSCRIBED'));
 }
@@ -243,7 +265,8 @@ async function forgetHome() {
 
 // ───────── Overzicht ─────────
 const dinnerToday = () => state.dinners.find((x) => x.day === today());
-const eaters = (d) => (d ? state.dinRsvps.filter((x) => x.dinner_id === d.id && x.answer === 'mee').reduce((s, x) => s + 1 + x.guests, 0) : 0);
+const eaters = (d) => (d ? state.dinRsvps.filter((x) => x.dinner_id === d.id && ['mee', 'kok'].includes(x.answer)).reduce((s, x) => s + 1 + x.guests, 0) : 0);
+const cooksOf = (d) => (d ? state.dinRsvps.filter((x) => x.dinner_id === d.id && x.answer === 'kok').map((x) => x.member_id) : []);
 const actDay = (a) => a.day || (a.starts_at ? iso(new Date(a.starts_at)) : null);
 // Kort: "20:00" vandaag, "morgen", "do 20:00"; zonder tijd alleen de dag.
 const actWhen = (a) => (a.starts_at ? whenShort(a.starts_at) : actDay(a) === today() ? 'vandaag' : dayLabel(actDay(a)));
@@ -269,13 +292,23 @@ function boardRows() {
     rows.push({ k: 'out', lvl: going ? 0 : 1, t: going ? 'nu' : 'vanavond', w: place ? `Uit · ${place}` : 'Uit', who: `${out.length} ${going ? 'gaan' : 'willen'}`, tab: 'uit' });
   }
   const d = dinnerToday(), n = eaters(d);
-  if (d?.menu || n) rows.push({ k: 'eten', lvl: 1, t: 'vanavond', w: d?.menu ? `Eten · ${d.menu}` : 'Eten', who: `${n} mee`, tab: 'eten' });
+  if (cooksOf(d).length) rows.push({ k: 'eten', lvl: 1, t: 'vanavond', w: d?.menu ? `Eten · ${d.menu}` : `${names(cooksOf(d), 2)} kookt`, who: `${n} mee`, tab: 'eten' });
   if (!outActive(me)) pokesForMe().forEach((p) =>
     rows.push({ k: 'por' + p.id, lvl: 0, t: 'nu', w: 'Mee uit?', who: `${memberName(p.from_member)} port je`, tab: 'uit' }));
   const a = nextActivity();
   if (a && actDay(a) <= addIso(t, 6)) {
     rows.push({ k: 'act' + a.id, lvl: actDay(a) === t ? 1 : 2, t: actWhen(a), w: a.title, who: `${actMee(a)} mee`, tab: 'uit' });
   }
+  state.laundry.filter((l) => l.member_id === me.id && new Date(l.starts_at) - Date.now() < 3 * 3600e3).slice(0, 1).forEach((l) =>
+    rows.push({ k: 'was' + l.id, lvl: new Date(l.starts_at) <= new Date() ? 0 : 1, t: hhmm(new Date(l.starts_at)), w: machName(l.machine), who: 'jij', tab: 'was' }));
+  state.anytimers.filter((x) => x.debtor === me.id && x.status === 'claimed').forEach((x) =>
+    rows.push({ k: 'any' + x.id, lvl: 0, t: 'nu', w: 'Anytimer!', who: `van ${memberName(x.holder)}`, tab: 'anytimers' }));
+  state.anytimers.filter((x) => x.debtor === me.id && x.status === 'pending').forEach((x) =>
+    rows.push({ k: 'anyp' + x.id, lvl: 1, t: 'nu', w: 'Anytimer bevestigen', who: memberName(x.holder), tab: 'anytimers' }));
+  state.news.filter((n) => n.created_by !== me.id && Date.now() - new Date(n.created_at) < 864e5).slice(0, 1).forEach((n) =>
+    rows.push({ k: 'news' + n.id, lvl: 1, t: 'nieuw', w: n.body, who: memberName(n.created_by), tab: 'mededelingen' }));
+  state.polls.filter((p) => !state.pollOptions.some((o) => o.poll_id === p.id && state.pollVotes.some((v) => v.option_id === o.id && v.member_id === me.id))).slice(0, 1)
+    .forEach((p) => rows.push({ k: 'poll' + p.id, lvl: 1, t: 'prikken', w: p.title, who: memberName(p.created_by), tab: 'uit' }));
   return rows.sort((x, y) => x.lvl - y.lvl).slice(0, 4);
 }
 
@@ -311,7 +344,7 @@ function tiles() {
   const stack = home.slice(0, 5).map((m) => avatar(m)).join('') + (home.length > 5 ? `<span class="av more">+${home.length - 5}</span>` : '');
 
   const d = dinnerToday(), myDinner = d && state.dinRsvps.find((x) => x.dinner_id === d.id && x.member_id === me.id);
-  const cook = d?.cook_id ? memberName(d.cook_id) : null; // het menu staat al op het bord
+  const cooks = cooksOf(d);
   const out = state.members.filter(outActive);
   const a = nextActivity();
 
@@ -320,8 +353,8 @@ function tiles() {
     <button class="tile" data-act="tab" data-tab="thuis"><span class="tt">Wie is thuis</span>
       <span class="v teal">${home.length}<small>/ ${state.members.length}</small></span><span class="stack">${stack}</span></button>
     <button class="tile" data-act="tab" data-tab="eten"><span class="tt">Eten vanavond</span>
-      <span class="v">${eaters(d)}<small>mee</small></span><span class="m">${esc(cook ? `kok: ${cook}` : d?.menu || 'nog geen menu')}</span>
-      ${myDinner ? '' : '<span class="m act">jij: nog niet gereageerd</span>'}</button>
+      <span class="v">${eaters(d)}<small>mee</small></span><span class="m">${esc(cooks.length ? `kok: ${names(cooks, 2)}` : 'nog niemand kookt')}</span>
+      ${cooks.length && !myDinner ? '<span class="m act">jij: nog niet gereageerd</span>' : ''}</button>
     <button class="tile" data-act="tab" data-tab="uit"><span class="tt">Uitgaan vanavond</span>
       <span class="v${out.length ? ' amber' : ''}">${out.length}<small>${out.length === 1 ? 'persoon' : 'personen'}</small></span>
       <span class="m">${esc(out.length ? names(out.map((m) => m.id), 3) : 'niemand gaat uit')}</span>
@@ -331,8 +364,22 @@ function tiles() {
       <span class="m">${a ? `${esc(a.title)} · ${actMee(a)} mee` : 'plan iets leuks'}</span></button>`;
 }
 
+function miniTiles() {
+  const me = state.me, free = MACHINES.filter((mc) => !machineBusy(mc.id)).length;
+  const myFines = state.fines.filter((f) => f.member_id === me.id && !f.paid_at);
+  const onMe = state.anytimers.filter((x) => x.debtor === me.id && x.status !== 'done' && x.status !== 'pending').length;
+  const mine = state.anytimers.filter((x) => x.holder === me.id && x.status === 'open').length;
+  const albums = albumActs().length;
+  const mini = (tab, tt, v, m = '', cls = '') => `<button class="tile mini" data-act="tab" data-tab="${tab}"><span class="tt">${tt}</span><span class="v ${cls}">${v}</span>${m ? `<span class="m">${m}</span>` : ''}</button>`;
+  return mini('was', 'Was', `${free}<small>/ 4 vrij</small>`, '', free ? 'teal' : 'amber')
+    + mini('mededelingen', 'Mededelingen', `${state.news.length}`, esc(state.news[0]?.body.slice(0, 28) || 'nog niets'))
+    + mini('albums', 'Fotoalbums', `${albums}`)
+    + mini('boetes', 'Boetes', euro(myFines.reduce((t, f) => t + Number(f.amount), 0)), myFines.length ? 'open' : '', myFines.length ? 'amber' : '')
+    + mini('anytimers', 'Anytimers', `${mine}<small>/ ${onMe}</small>`, 'van jou / op jou');
+}
+
 function viewHome() {
-  return `${board()}${hereStrip()}<div class="tiles">${tiles()}</div>`;
+  return `${board()}${hereStrip()}<div class="tiles">${tiles()}</div><div class="tiles minis">${miniTiles()}</div>`;
 }
 
 // ───────── Views ─────────
@@ -368,7 +415,7 @@ function viewAfval() {
     return `<div class="card today"><b>${from}</b> wil ruilen${s.to_member ? ' met jou' : ''}: week <b>${weekLabel(theirs)}</b>${partner ? ` met ${esc(memberName(partner))}` : ''}.
       <p class="muted">${mine === null ? 'Jij hebt nog geen week om terug te geven.' : `Jij doet dan die week, ${from} jouw week van ${weekLabel(mine)}.`}</p>
       <div class="row wrap">${mine === null ? '' : `<button class="primary" data-act="afvalswap" data-id="${s.id}" data-ans="accept">Akkoord, ruilen</button>`}
-      ${s.to_member ? `<button data-act="afvalswap" data-id="${s.id}" data-ans="decline">Nee</button>` : ''}</div></div>`;
+      ${s.to_member ? `<button data-act="afvalswap" data-id="${s.id}" data-ans="decline">Nee</button>` : `<button data-act="afvalnee" data-id="${s.id}">Nee</button>`}</div></div>`;
   }).join('');
   const mineOpen = state.afvalSwaps.filter((s) => s.from_member === me.id);
   const outgoing = mineOpen.map((s) => `<div class="card"><p class="muted">Je ruilverzoek voor ${weekLabel(afvalWeek(s.week_start))} (aan ${s.to_member ? esc(memberName(s.to_member)) : 'iedereen'}) wacht op antwoord.</p>
@@ -421,79 +468,273 @@ function viewUit() {
       <div class="row wrap" style="margin-top:8px"><button class="primary" data-act="joinout" data-id="${p.from_member}">Ik ga mee</button>
       <button data-act="pornee" data-id="${p.id}">Niet vanavond</button></div></div>`;
   }).join('');
-  const going = state.members.filter(outActive).sort((a, b) => (a.out_status === 'going' ? -1 : 1) - (b.out_status === 'going' ? -1 : 1));
-  const list = going.map((m) => `<div class="row person">${avatar(m, 'lg')}
-    <div class="grow"><b>${esc(m.name)}</b> ${m.out_status === 'going' ? 'gaat' : 'wil'} uit${m.out_place ? ` · ${esc(m.out_place)}` : ''}
-      ${m.out_note ? `<div class="muted">${esc(m.out_note)}</div>` : ''}</div>
-    ${m.id !== me.id && !out ? `<button data-act="joinout" data-id="${m.id}">Ik ook</button>` : m.id === me.id ? '<span class="chip warn">jij</span>' : ''}</div>`).join('')
-    || '<p class="muted">Nog niemand. Wees de eerste.</p>';
-  const now = !out ? 'geen plannen' : me.out_status === 'wants' ? 'wil uit' : 'gaat uit';
-  const form = `<form data-form="out">
-    <input name="place" placeholder="Waar? (bijv. stad, kroeg)" maxlength="80" value="${esc(out ? me.out_place : '')}">
-    <input name="note" placeholder="Opmerking (hoe laat, wie, …)" maxlength="200" value="${esc(out ? me.out_note : '')}">
-    <div class="row wrap"><button class="primary" name="status" value="wants">Ik wil uit</button>
-    <button name="status" value="going">Ik ga uit</button>${out ? '<button name="status" value="none">Toch niet</button>' : ''}</div></form>
-    <p class="muted">Nu: ${now}</p>`;
-  const order = { home: 0, nearby: 1, away: 2, unknown: 3 };
+  const going = state.members.filter(outActive).sort((a, b) => (a.out_status === 'going' ? 0 : 1) - (b.out_status === 'going' ? 0 : 1));
+  const no = state.members.filter(outNo);
+  const open = state.members.filter((m) => !outActive(m) && !outNo(m));
+  const line = (m) => `<div class="row person">${avatar(m, 'lg')}<div class="grow"><b>${esc(m.name)}</b> ${m.out_status === 'going' ? 'gaat' : 'wil'} uit
+    <div class="muted">${[m.out_place, m.out_time && `om ${m.out_time}`, m.out_note].filter(Boolean).map(esc).join(' · ') || 'nog geen plek of tijd'}</div></div>
+    ${m.id === me.id ? '<span class="chip warn">jij</span>' : ''}</div>`;
+  const summary = going.length
+    ? `<button class="outsum" data-act="outopen"><span class="stack">${going.slice(0, 6).map((m) => avatar(m)).join('')}</span>
+        <span class="grow"><b>${going.length} ${going.length === 1 ? 'gaat' : 'gaan'} uit</b><small>${esc(going.find((m) => m.out_place)?.out_place || '')}${going.find((m) => m.out_time) ? ` · vanaf ${going.find((m) => m.out_time).out_time}` : ''} · tik voor wie, waar en hoe laat</small></span></button>
+      ${!out && !outNo(me) ? `<div class="row wrap" style="margin-top:10px"><button class="primary" data-act="joinout" data-id="${going[0].id}">Ik ga mee</button><button data-act="outno">Ik ga niet mee</button></div>` : ''}`
+    : '<p class="muted">Nog niemand. Wees de eerste.</p>';
+  const detail = state.outOpen && going.length ? `<div class="outdetail">${going.map(line).join('')}
+      ${no.length ? `<p class="muted">Gaan niet mee: ${esc(names(no.map((m) => m.id), 17))}</p>` : ''}
+      ${open.length ? `<p class="muted">Nog niet gereageerd: ${esc(names(open.map((m) => m.id), 17))}</p>` : ''}</div>` : '';
+  const mine = out
+    ? `<div class="row"><div class="grow"><b>Jij ${me.out_status === 'going' ? 'gaat' : 'wil'} uit</b><div class="muted">${[me.out_place, me.out_time && `om ${me.out_time}`, me.out_note].filter(Boolean).map(esc).join(' · ') || 'vanavond'}</div></div>
+       <form data-form="out"><button name="status" value="none">Toch niet</button></form></div>`
+    : `<form data-form="out">
+      <input name="place" placeholder="Waar? (bijv. stad, kroeg)" maxlength="80">
+      <div class="row"><label class="grow">Hoe laat?<input name="time" type="time"></label></div>
+      <input name="note" placeholder="Opmerking (met wie, hoe, …)" maxlength="200">
+      <div class="row wrap"><button class="primary" name="status" value="wants">Ik wil uit</button><button name="status" value="going">Ik ga uit</button></div></form>
+      ${outNo(me) ? '<p class="muted">Je gaat vanavond niet mee.</p>' : ''}`;
   const poked = state.pokes.filter((p) => p.from_member === me.id).map((p) => p.to_member);
-  const pokeList = state.members.filter((m) => m.id !== me.id && !outActive(m))
-    .sort((a, b) => order[a.zone] - order[b.zone] || a.name.localeCompare(b.name))
-    .map((m) => `<div class="row person">${avatar(m, m.zone === 'home' ? 'lg' : 'lg off')}<div class="grow"><b>${esc(m.name)}</b><div class="muted">${ZONES[m.zone]}</div></div>
-      ${poked.includes(m.id) ? '<span class="chip">gepord</span>' : `<button data-act="por" data-id="${m.id}">Por</button>`}</div>`).join('');
-  return `${pokes}<h2>Vanavond uit</h2><div class="card">${list}</div>
-    <h2>Jij</h2><div class="card">${form}</div>
-    ${out && pokeList ? `<h2>Wie por je mee?</h2><div class="card">${pokeList}</div>` : ''}
+  const canPoke = state.members.filter((m) => m.id !== me.id && !outActive(m) && !poked.includes(m.id));
+  const por = out && canPoke.length ? `<h2>Iemand porren</h2><div class="card"><form data-form="por" class="row">
+      <select name="to" class="grow" aria-label="Wie wil je porren?"><option value="">Kies een huisgenoot</option>${canPoke.map((m) => `<option value="${m.id}">${esc(m.name)} (${ZONES[m.zone]})</option>`).join('')}</select>
+      <button class="primary">Por</button></form>${poked.length ? `<p class="muted">Al gepord: ${esc(names(poked, 17))}</p>` : ''}</div>` : '';
+  return `${pokes}<h2>Vanavond uit</h2><div class="card">${summary}${detail}</div>
+    <h2>Jij</h2><div class="card">${mine}</div>${por}
     <h2>Agenda</h2>${agenda()}
-    <details class="card"${state.activities.length ? '' : ' open'}><summary><b>Activiteit toevoegen</b></summary><form data-form="activity">
+    ${polls()}
+    <details class="card"><summary><b>Activiteit toevoegen</b></summary><form data-form="activity">
       <input name="title" placeholder="Wat? (huisavond, filmavond, Catan, borrel)" required maxlength="120">
       <div class="row"><label class="grow">Datum (mag leeg)<input name="day" type="date" min="${today()}"></label>
         <label class="grow">Tijd (mag leeg)<input name="time" type="time"></label></div>
-      <input name="note" placeholder="Opmerking" maxlength="500"><button class="primary">Toevoegen</button></form></details>`;
+      <input name="note" placeholder="Opmerking" maxlength="500"><button class="primary">Toevoegen</button></form></details>
+    <details class="card"><summary><b>Datumprikker maken</b></summary><form data-form="poll">
+      <input name="title" placeholder="Waarvoor? (huisweekend, kerstdiner)" required maxlength="120">
+      ${[0, 1, 2, 3].map((i) => `<div class="row"><label class="grow">Optie ${i + 1}<input name="d${i}" type="date" min="${today()}" ${i ? '' : 'required'}></label><label class="grow">Tijd<input name="t${i}" type="time"></label></div>`).join('')}
+      <button class="primary">Rondsturen</button></form></details>`;
 }
 
-// Huisagenda: activiteiten per dag, zonder datum onderaan.
+// Huisagenda: per dag, zonder datum onderaan. Tik op een activiteit voor details en wie er meegaat.
 function agenda() {
-  const card = (a) => {
-    const r = state.actRsvps.filter((x) => x.activity_id === a.id);
-    const my = r.find((x) => x.member_id === state.me.id)?.answer;
-    const mee = r.filter((x) => x.answer === 'mee').map((x) => x.member_id);
-    return `<div class="act"><div class="dayhead"><b>${esc(a.title)}</b><span class="muted">${a.starts_at ? hhmm(new Date(a.starts_at)) : ''}</span></div>
-      ${a.note ? `<div class="muted">${esc(a.note)}</div>` : ''}
-      <div class="row wrap" style="margin:8px 0">${rsvpButtons('arsvp', a.id, my)}</div>
-      <div class="muted"><b>${mee.length}</b> mee${mee.length ? `: ${esc(names(mee, 8))}` : ''}</div>
-      ${a.created_by === state.me.id || state.me.is_admin ? `<button class="ghost" data-act="delact" data-id="${a.id}">Verwijderen</button>` : ''}</div>`;
+  const row = (a) => {
+    const my = state.actRsvps.find((x) => x.activity_id === a.id && x.member_id === state.me.id)?.answer;
+    return `<button class="actrow" data-act="openact" data-id="${a.id}"><span class="grow"><b>${esc(a.title)}</b>
+      <small>${a.starts_at ? hhmm(new Date(a.starts_at)) + ' · ' : ''}${actMee(a)} mee${my ? ` · jij: ${my}` : ''}</small></span>${ICON.chevron}</button>`;
   };
   const days = [...new Set(state.activities.map(actDay).filter(Boolean))].sort();
   const undated = state.activities.filter((a) => !actDay(a));
   const groups = days.map((d) => `<div class="card${d === today() ? ' today' : ''}"><div class="agday">${d === today() ? 'Vandaag' : d === addIso(today(), 1) ? 'Morgen' : dayLabel(d)}</div>
-    ${state.activities.filter((a) => actDay(a) === d).map(card).join('')}</div>`).join('');
-  const rest = undated.length ? `<div class="card"><div class="agday">Datum volgt</div>${undated.map(card).join('')}</div>` : '';
+    ${state.activities.filter((a) => actDay(a) === d).map(row).join('')}</div>`).join('');
+  const rest = undated.length ? `<div class="card"><div class="agday">Datum volgt</div>${undated.map(row).join('')}</div>` : '';
   return groups + rest || '<div class="card"><p class="muted">Nog niets gepland. Voeg hieronder iets toe: huisavond, filmavond, spelletjes…</p></div>';
+}
+
+function polls() {
+  if (!state.polls.length) return '';
+  const me = state.me;
+  return `<h2>Datumprikker</h2>` + state.polls.map((p) => {
+    const opts = state.pollOptions.filter((o) => o.poll_id === p.id);
+    const rows = opts.map((o) => {
+      const vs = state.pollVotes.filter((v) => v.option_id === o.id), mine = vs.find((v) => v.member_id === me.id)?.answer;
+      const ja = vs.filter((v) => v.answer === 'ja').length, mis = vs.filter((v) => v.answer === 'misschien').length;
+      return `<div class="pollrow"><div class="grow"><b>${dayLabel(o.day)}${o.time ? ` ${o.time}` : ''}</b><div class="muted">${ja} ja · ${mis} misschien</div></div>
+        <div class="seg">${['ja', 'misschien', 'nee'].map((a) => `<button class="${mine === a ? 'on' : ''}" data-act="vote" data-id="${o.id}" data-ans="${a}">${a === 'misschien' ? '?' : a[0].toUpperCase() + a.slice(1)}</button>`).join('')}</div>
+        ${p.created_by === me.id || me.is_admin ? `<button class="ghost" data-act="pollact" data-id="${o.id}">Kies</button>` : ''}</div>`;
+    }).join('');
+    return `<div class="card"><div class="dayhead"><b>${esc(p.title)}</b><span class="muted">${esc(memberName(p.created_by))}</span></div>${rows}
+      ${p.created_by === me.id || me.is_admin ? `<button class="ghost" data-act="pollclose" data-id="${p.id}">Sluiten zonder activiteit</button>` : ''}</div>`;
+  }).join('');
 }
 
 function rsvpButtons(kind, id, mineAnswer) {
   return ['mee', 'misschien', 'niet'].map((a) => `<button data-act="${kind}" data-id="${id}" data-ans="${a}" class="${mineAnswer === a ? 'on' : ''}">${a[0].toUpperCase() + a.slice(1)}</button>`).join('');
 }
 
+// ───────── Activiteit: details, wie gaat mee, POV-album ─────────
+const allActs = () => [...state.activities, ...state.pastActs];
+const povStart = (a) => (a.starts_at ? new Date(a.starts_at) : actDay(a) ? new Date(actDay(a) + 'T00:00:00') : null);
+const povReveal = (a) => (actDay(a) ? new Date(addIso(actDay(a), 1) + 'T10:00:00') : null);
+const albumActs = () => allActs().filter((a) => state.povPhotos.some((p) => p.activity_id === a.id) || (povStart(a) && povStart(a) <= new Date() && new Date() < povReveal(a)));
+const photoGrid = (ps) => `<div class="photos">${ps.map((p) => `<img data-path="${esc(p.path)}" data-act="openphoto" alt="Foto van ${esc(memberName(p.member_id))}">`).join('')}</div>`;
+
+function viewAct() {
+  const a = allActs().find((x) => x.id === state.actId);
+  if (!a) return '<div class="card"><p class="muted">Deze activiteit bestaat niet meer.</p><button data-act="tab" data-tab="uit">Terug naar activiteiten</button></div>';
+  const me = state.me, rs = state.actRsvps.filter((x) => x.activity_id === a.id), my = rs.find((x) => x.member_id === me.id)?.answer;
+  const by = (ans) => rs.filter((x) => x.answer === ans).map((x) => x.member_id);
+  const none = state.members.filter((m) => !rs.some((x) => x.member_id === m.id)).map((m) => m.id);
+  const group = (title, ids) => (ids.length ? `<div class="grp"><div class="agday">${title} (${ids.length})</div><div class="stack wrap">${ids.map((id) => state.members.find((m) => m.id === id)).filter(Boolean).map((m) => `<span class="pill">${avatar(m)}${esc(m.name)}</span>`).join('')}</div></div>` : '');
+  const start = povStart(a), reveal = povReveal(a), now = new Date();
+  const mine = state.povPhotos.filter((p) => p.activity_id === a.id && p.member_id === me.id), all = state.povPhotos.filter((p) => p.activity_id === a.id);
+  const pov = !start ? '<p class="muted">Geef de activiteit een datum, dan komt er automatisch een fotoalbum bij.</p>'
+    : now < start ? `<p class="muted">Het album gaat open bij de start: ${a.starts_at ? whenShort(a.starts_at) : dayLabel(actDay(a))}. Iedereen kan dan ${POV_MAX} foto's maken.</p>`
+      : now < reveal ? `<p class="muted">Nog ${POV_MAX - mine.length} van ${POV_MAX} foto's. Het album ontwikkelt ${dayLabel(addIso(actDay(a), 1))} om 10:00; tot dan zie je alleen je eigen foto's.</p>
+        ${mine.length < POV_MAX ? `<label class="btn primary">Foto maken<input type="file" accept="image/*" capture="environment" data-photo="pov" data-id="${a.id}" hidden></label>` : ''}
+        ${photoGrid(mine)}`
+        : a.drive_url ? `<p class="muted">De foto's van deze activiteit staan in de Drive.</p><a class="btn" href="${esc(a.drive_url)}" target="_blank" rel="noopener">Bekijk in Google Drive</a>`
+        : all.length ? `<p class="muted">${all.length} foto's van ${new Set(all.map((p) => p.member_id)).size} huisgenoten.</p>${photoGrid(all)}` : '<p class="muted">Er zijn geen foto\'s gemaakt.</p>';
+  return `<button class="ghost" data-act="tab" data-tab="uit">Terug naar activiteiten</button>
+    <div class="card"><div class="dayhead"><b class="big">${esc(a.title)}</b></div>
+      <p class="muted">${actDay(a) ? `${dayLabel(actDay(a))}${a.starts_at ? ' om ' + hhmm(new Date(a.starts_at)) : ''}` : 'Datum volgt'} · gepland door ${esc(memberName(a.created_by))}</p>
+      ${a.note ? `<p>${esc(a.note)}</p>` : ''}
+      <div class="row wrap">${rsvpButtons('arsvp', a.id, my)}</div></div>
+    <h2>Wie gaat er mee</h2><div class="card">${group('Mee', by('mee'))}${group('Misschien', by('misschien'))}${group('Niet', by('niet'))}${group('Nog niet gereageerd', none)}</div>
+    <h2>Fotoalbum</h2><div class="card">${pov}</div>
+    ${a.created_by === me.id || me.is_admin ? `<button class="ghost" data-act="delact" data-id="${a.id}">Activiteit verwijderen</button>` : ''}`;
+}
+
+function viewAlbums() {
+  const acts = albumActs().sort((x, y) => (actDay(y) || '').localeCompare(actDay(x) || '')).slice(0, 5);
+  const drive = state.household?.drive_url ? `<a class="btn primary drivebtn" href="${esc(state.household.drive_url)}" target="_blank" rel="noopener">Naar de huis-Drive</a>
+    <p class="muted">De app toont de 5 nieuwste albums. Oudere albums gaan automatisch naar een eigen mapje in de Drive.</p>` : '';
+  return drive + (acts.map((a) => {
+    const ps = state.povPhotos.filter((p) => p.activity_id === a.id), busy = new Date() < povReveal(a);
+    return `<button class="card album" data-act="openact" data-id="${a.id}"><div class="dayhead"><b>${esc(a.title)}</b><span class="muted">${dayLabel(actDay(a))}</span></div>
+      <span class="muted">${busy ? `album ontwikkelt ${dayLabel(addIso(actDay(a), 1))} 10:00 · jij hebt er ${ps.filter((p) => p.member_id === state.me.id).length}` : `${ps.length} foto's`}</span>
+      ${busy ? '' : photoGrid(ps.slice(0, 6))}</button>`;
+  }).join('') || '<div class="card"><p class="muted">Nog geen albums. Bij elke activiteit met een datum komt er automatisch een album: vanaf de start kan iedereen 25 foto\'s maken, en de dag erna om 10:00 ontwikkelt het album.</p></div>');
+}
+
+// ───────── Eten: eerst een kok, dan pas mee-eten ─────────
 function viewEten() {
-  const days = Array.from({ length: 7 }, (_, i) => addIso(today(), i));
-  return days.map((day) => {
-    const d = state.dinners.find((x) => x.day === day);
-    const r = d ? state.dinRsvps.filter((x) => x.dinner_id === d.id) : [];
-    const my = r.find((x) => x.member_id === state.me.id);
-    const eat = r.filter((x) => x.answer === 'mee');
-    const open = state.members.length - r.length;
-    return `<div class="card ${day === today() ? 'today' : ''}"><div class="dayhead"><b>${dayLabel(day)}</b>
-      <span class="chip">${eaters(d)} eters</span></div>
-      <div>${d?.menu ? esc(d.menu) : '<span class="muted">Nog geen menu</span>'}${d?.cook_id ? ` · kok: ${esc(memberName(d.cook_id))}` : ''}</div>
-      <div class="row wrap" style="margin:8px 0">${rsvpButtons('drsvp', day, my?.answer)}
-      <button data-act="guest" data-id="${day}">+gast (${my?.guests || 0})</button></div>
-      <div class="muted">Mee: ${esc(names(eat.map((x) => x.member_id), 8))} · nog niet gereageerd: ${open}</div>
-      <details><summary>Menu / kok</summary><form data-form="dinner" data-day="${day}">
-        <input name="menu" placeholder="Wat eten we?" maxlength="120" value="${esc(d?.menu)}">
-        <select name="cook"><option value="">Wie kookt?</option>${state.members.map((m) => `<option value="${m.id}" ${d?.cook_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
-        <button>Opslaan</button></form></details></div>`;
+  const me = state.me;
+  return Array.from({ length: 7 }, (_, i) => addIso(today(), i)).map((day) => {
+    const d = state.dinners.find((x) => x.day === day), cooks = cooksOf(d);
+    const r = d ? state.dinRsvps.filter((x) => x.dinner_id === d.id) : [], my = r.find((x) => x.member_id === me.id);
+    const eat = r.filter((x) => x.answer === 'mee').map((x) => x.member_id), amCook = cooks.includes(me.id);
+    const body = !cooks.length
+      ? `<p class="muted">Nog niemand kookt.</p><button class="primary" data-act="kok" data-id="${day}">Ik ga koken</button>`
+      : `<div><b>Kok${cooks.length > 1 ? 's' : ''}: ${esc(names(cooks, 5))}</b>${d.menu ? ` · ${esc(d.menu)}` : ''}</div>
+        <div class="row wrap" style="margin:8px 0">${amCook
+          ? `<button data-act="nokok" data-id="${day}">Ik kook toch niet</button>`
+          : `${['mee', 'niet'].map((a) => `<button data-act="drsvp" data-id="${day}" data-ans="${a}" class="${my?.answer === a ? 'on' : ''}">${a === 'mee' ? 'Ik eet mee' : 'Niet'}</button>`).join('')}
+             <button data-act="guest" data-id="${day}">+ gast (${my?.guests || 0})</button><button data-act="kok" data-id="${day}">Ik kook ook</button>`}</div>
+        <div class="muted">Mee: ${esc(names(eat, 8))} · nog niet gereageerd: ${state.members.length - r.length}</div>
+        ${amCook ? `<details><summary>Menu</summary><form data-form="dinner" data-day="${day}"><input name="menu" placeholder="Wat eten we?" maxlength="120" value="${esc(d.menu)}"><button>Opslaan</button></form></details>` : ''}`;
+    return `<div class="card ${day === today() ? 'today' : ''}"><div class="dayhead"><b>${dayLabel(day)}</b><span class="chip">${eaters(d)} eters</span></div>${body}</div>`;
   }).join('');
+}
+
+// ───────── Was: 2 wasmachines, 2 drogers ─────────
+const MACHINES = [{ id: 'was1', name: 'Wasmachine 1' }, { id: 'was2', name: 'Wasmachine 2' }, { id: 'droger1', name: 'Droger 1' }, { id: 'droger2', name: 'Droger 2' }];
+const machineBusy = (id) => state.laundry.find((l) => l.machine === id && new Date(l.starts_at) <= new Date() && new Date(l.ends_at) > new Date());
+const machName = (id) => MACHINES.find((m) => m.id === id)?.name || id;
+const slotLabel = (l) => `${dayLabel(iso(new Date(l.starts_at)))} ${hhmm(new Date(l.starts_at))}–${hhmm(new Date(l.ends_at))}`;
+function viewWas() {
+  const me = state.me;
+  const cards = MACHINES.map((mc) => {
+    const now = machineBusy(mc.id), next = state.laundry.filter((l) => l.machine === mc.id && l !== now);
+    return `<div class="card"><div class="dayhead"><b>${mc.name}</b>${now ? `<span class="chip ${now.member_id === me.id ? 'warn' : 'away'}">bezet tot ${hhmm(new Date(now.ends_at))}</span>` : '<span class="chip home">nu vrij</span>'}</div>
+      ${[now, ...next].filter(Boolean).map((l) => `<div class="row person"><span class="grow">${slotLabel(l)} · ${l.member_id === me.id ? '<b>jij</b>' : esc(memberName(l.member_id))}</span>
+        ${l.member_id === me.id || me.is_admin ? `<button class="ghost" data-act="release" data-id="${l.id}">Weg</button>` : ''}</div>`).join('')}</div>`;
+  }).join('');
+  const t = new Date(Math.ceil(Date.now() / 9e5) * 9e5); // eerstvolgende kwartier
+  return `<h2>Dibsen</h2><div class="card"><form data-form="was">
+      <select name="machine" required aria-label="Machine">${MACHINES.map((m) => `<option value="${m.id}">${m.name}</option>`).join('')}</select>
+      <div class="row"><label class="grow">Dag<select name="day">${[0, 1, 2, 3].map((i) => `<option value="${addIso(today(), i)}">${dayLabel(addIso(today(), i))}</option>`).join('')}</select></label>
+        <label class="grow">Vanaf<input name="time" type="time" step="900" value="${hhmm(t)}"></label></div>
+      <label>Hoe lang<select name="dur"><option value="60">1 uur</option><option value="90" selected>1,5 uur</option><option value="120">2 uur</option><option value="150">2,5 uur</option><option value="180">3 uur</option><option value="night">Nachtwas (23:00 – 08:00)</option></select></label>
+      <button class="primary">Dibs</button></form></div>
+    <h2>Machines</h2>${cards}`;
+}
+
+// ───────── Mededelingen ─────────
+function viewNews() {
+  const list = state.news.map((n) => {
+    const m = state.members.find((x) => x.id === n.created_by);
+    return `<div class="card"><div class="row">${m ? avatar(m) : ''}<b class="grow">${esc(m?.name || 'Oud-huisgenoot')}</b><span class="muted">${ago(n.created_at)}</span></div>
+      <p class="newsbody">${esc(n.body)}</p>${n.created_by === state.me.id || state.me.is_admin ? `<button class="ghost" data-act="delnews" data-id="${n.id}">Verwijderen</button>` : ''}</div>`;
+  }).join('') || '<div class="card"><p class="muted">Nog geen mededelingen.</p></div>';
+  return `<div class="card"><form data-form="news"><textarea name="body" rows="3" maxlength="1000" required placeholder="Iets belangrijks voor het hele huis?"></textarea>
+    <button class="primary">Plaatsen (iedereen krijgt een melding)</button></form></div>${list}`;
+}
+
+// ───────── Boetes ─────────
+const euro = (n) => `€ ${Number(n).toFixed(2).replace('.', ',')}`;
+function viewFines() {
+  const me = state.me, h = state.household;
+  const mine = state.fines.filter((f) => f.member_id === me.id), open = mine.filter((f) => !f.paid_at);
+  const total = open.reduce((t, f) => t + Number(f.amount), 0);
+  const desc = `Boete V70 ${me.name}`;
+  const pay = !open.length ? '<p class="muted">Je hebt geen openstaande boetes.</p>'
+    : !h?.iban ? '<p class="muted">De beheerder heeft nog geen huisrekening ingevuld (Profiel → Beheer).</p>'
+      : `<div class="paybox"><div><span class="muted">Naar</span><b>${esc(h.iban)}</b>${h.iban_name ? `<span class="muted">t.n.v. ${esc(h.iban_name)}</span>` : ''}</div>
+        <div><span class="muted">Bedrag</span><b>${euro(total)}</b></div><div><span class="muted">Omschrijving</span><b>${esc(desc)}</b></div></div>
+        <div class="row wrap"><button class="primary" data-act="copy" data-text="${esc(h.iban)}">Kopieer IBAN</button>
+        <button data-act="copy" data-text="${total.toFixed(2).replace('.', ',')}">Kopieer bedrag</button><button data-act="copy" data-text="${esc(desc)}">Kopieer omschrijving</button></div>
+        <p class="muted">Maak het over in je bank-app. De beheerder vinkt je boete af zodra het geld binnen is.</p>`;
+  const row = (f, admin) => `<div class="row person"><div class="grow"><b>${euro(f.amount)}</b> · ${esc(f.reason)}<div class="muted">${admin ? esc(memberName(f.member_id)) + ' · ' : ''}${dayLabel(iso(new Date(f.created_at)))}${f.paid_at ? ' · betaald' : ''}</div></div>
+    ${admin && !f.paid_at ? `<button data-act="finepaid" data-id="${f.id}">Betaald</button><button class="ghost" data-act="finedel" data-id="${f.id}">Weg</button>` : ''}</div>`;
+  const admin = me.is_admin ? `<h2>Beheer: boete geven</h2><div class="card"><form data-form="fine">
+      <select name="member" required aria-label="Wie"><option value="">Wie?</option>${state.members.map((m) => `<option value="${m.id}">${esc(m.name)}${m.room ? ` (kamer ${m.room})` : ''}</option>`).join('')}</select>
+      <div class="row"><label class="grow">Bedrag (€)<input name="amount" inputmode="decimal" value="5" required></label></div>
+      <input name="reason" list="redenen" value="Afvaldienst niet gedaan" maxlength="120" required><datalist id="redenen"><option value="Afvaldienst niet gedaan"></datalist>
+      <button class="primary">Boete geven</button></form></div>
+    <h2>Alle open boetes</h2><div class="card">${state.fines.filter((f) => !f.paid_at).map((f) => row(f, true)).join('') || '<p class="muted">Geen open boetes.</p>'}</div>` : '';
+  return `<div class="card"><div class="dayhead"><b>Open</b><b class="big ${total ? 'amberText' : ''}">${euro(total)}</b></div>${open.map((f) => row(f)).join('')}${pay}</div>
+    ${mine.some((f) => f.paid_at) ? `<details class="card"><summary>Betaald</summary>${mine.filter((f) => f.paid_at).map((f) => row(f)).join('')}</details>` : ''}${admin}`;
+}
+
+// ───────── Anytimers ─────────
+function viewAnytimers() {
+  const me = state.me, onMe = state.anytimers.filter((x) => x.debtor === me.id), mine = state.anytimers.filter((x) => x.holder === me.id);
+  const who = (id) => esc(memberName(id));
+  const onMeRow = (x) => `<div class="row person"><div class="grow"><b>${who(x.holder)}</b>${x.reason ? ` · ${esc(x.reason)}` : ''}
+      <div class="muted">${{ pending: 'zegt een anytimer op je te hebben', open: 'heeft er een op jou', claimed: 'zet hem nu in!', done: 'gedaan' }[x.status]}</div></div>
+    ${x.status === 'pending' ? `<button class="primary" data-act="anyact" data-id="${x.id}" data-ans="accept">Klopt</button><button data-act="anyact" data-id="${x.id}" data-ans="reject">Klopt niet</button>` : ''}
+    ${x.status === 'claimed' ? `<label class="btn primary">Bewijs sturen<input type="file" accept="image/*" capture="user" data-photo="anytimer" data-id="${x.id}" hidden></label>` : ''}</div>`;
+  const mineRow = (x) => `<div class="row person"><div class="grow"><b>${who(x.debtor)}</b>${x.reason ? ` · ${esc(x.reason)}` : ''}
+      <div class="muted">${{ pending: 'wacht op bevestiging', open: 'klaar om in te zetten', claimed: 'ingezet, wacht op bewijs', done: 'gedaan' }[x.status]}</div>
+      ${x.status === 'done' && x.photo_path ? photoGrid([{ path: x.photo_path, member_id: x.debtor }]) : ''}</div>
+    ${x.status === 'open' ? `<button class="primary" data-act="anyact" data-id="${x.id}" data-ans="claim">Inzetten</button>` : ''}
+    ${['pending', 'open'].includes(x.status) ? `<button class="ghost" data-act="anyact" data-id="${x.id}" data-ans="cancel">Intrekken</button>` : ''}</div>`;
+  const others = state.members.filter((m) => m.id !== me.id);
+  return `${onMe.some((x) => x.status === 'claimed') ? '<div class="card today"><b>Er is een anytimer op je ingezet.</b><p class="muted">Drinken, foto maken en als bewijs sturen. Alleen de gever ziet de foto.</p></div>' : ''}
+    <h2>Op jou (${onMe.filter((x) => x.status !== 'done').length})</h2><div class="card">${onMe.filter((x) => x.status !== 'done').map(onMeRow).join('') || '<p class="muted">Niemand heeft er een op jou.</p>'}</div>
+    <h2>Van jou (${mine.filter((x) => x.status !== 'done').length})</h2><div class="card">${mine.filter((x) => x.status !== 'done').map(mineRow).join('') || '<p class="muted">Je hebt er nog geen.</p>'}</div>
+    <details class="card"><summary><b>Anytimer toevoegen</b></summary><form data-form="anytimer">
+      <select name="debtor" required aria-label="Op wie"><option value="">Ik heb een anytimer op…</option>${others.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>
+      <input name="reason" maxlength="120" placeholder="Waarvoor? (weddenschap verloren, …)"><button class="primary">Toevoegen</button>
+      <p class="muted">De ander moet bevestigen dat het klopt.</p></form></details>
+    ${mine.some((x) => x.status === 'done') ? `<details class="card"><summary>Gedaan (met bewijs)</summary>${mine.filter((x) => x.status === 'done').map(mineRow).join('')}</details>` : ''}`;
+}
+
+// ───────── Foto's: verkleinen, uploaden en tonen ─────────
+const POV_MAX = 25;
+// shortcut: 1280 px / JPEG 0,72 (~150–250 kB); bij 1 GB gratis opslag past dat ~5000 foto's, daarna oude albums opruimen.
+async function compress(file, max = 1280, q = 0.72) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(img.width, img.height));
+  const c = Object.assign(document.createElement('canvas'), { width: Math.round(img.width * k), height: Math.round(img.height * k) });
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return new Promise((res) => c.toBlob(res, 'image/jpeg', q));
+}
+const photoPath = (kind) => `${state.me.household_id}/${kind}/${state.me.id}/${crypto.randomUUID()}.jpg`;
+async function addPov(actId, files) {
+  let n = 0;
+  for (const file of files) {
+    const path = photoPath('pov');
+    const row = await sb.from('pov_photos').insert({ activity_id: actId, path }); // eerst de rij: de database bewaakt max. 25 en het tijdvak
+    if (row.error) { toast('Kan geen foto meer toevoegen (max. 25, of het album is dicht)'); break; }
+    const up = await sb.storage.from('v70').upload(path, await compress(file), { contentType: 'image/jpeg' });
+    if (up.error) { await sb.from('pov_photos').delete().eq('path', path); toast('Uploaden mislukt: ' + up.error.message); break; }
+    n++;
+  }
+  if (n) { toast(n === 1 ? 'Foto toegevoegd' : `${n} foto's toegevoegd`); await loadAll(); render(); }
+}
+async function anytimerProof(id, file) {
+  const path = photoPath('anytimer');
+  const up = await sb.storage.from('v70').upload(path, await compress(file), { contentType: 'image/jpeg' });
+  if (up.error) return toast('Uploaden mislukt: ' + up.error.message);
+  if (await run(sb.rpc('anytimer_act', { p_id: id, p_action: 'proof', p_photo: path }), 'Bewijs verstuurd')) notify('anytimer', { id });
+}
+const urls = new Map();
+async function hydratePhotos() {
+  const imgs = [...document.querySelectorAll('img[data-path]')].filter((i) => !i.src);
+  if (!imgs.length || !sb) return;
+  const need = [...new Set(imgs.map((i) => i.dataset.path))].filter((p) => !urls.has(p));
+  if (need.length) {
+    const { data } = await sb.storage.from('v70').createSignedUrls(need, 3600);
+    (data || []).forEach((d) => d.signedUrl && urls.set(d.path, d.signedUrl));
+  }
+  imgs.forEach((i) => { if (urls.has(i.dataset.path)) i.src = urls.get(i.dataset.path); });
 }
 
 function viewPush() {
@@ -514,7 +755,14 @@ function adminPanel() {
   const people = state.members.map((m) => `<div class="row person">${avatar(m)}<span class="grow">${esc(m.name)}${m.room ? ` <span class="muted">kamer ${m.room}</span>` : ''} ${m.is_admin ? '<span class="chip">beheerder</span>' : ''}</span>
     ${m.id === state.me.id ? '' : `<button data-act="admin" data-id="${m.id}" data-val="${!m.is_admin}">${m.is_admin ? 'Geen beheerder' : 'Beheerder'}</button>
     <button data-act="rmmember" data-id="${m.id}">Verwijder</button>`}</div>`).join('');
-  return `    <h2>Beheer: huisgenoten</h2><div class="card">${people}</div>`;
+  return `<h2>Beheer: huisrekening</h2><div class="card"><form data-form="iban">
+      <label>IBAN voor boetes<input name="iban" value="${esc(state.household?.iban)}" placeholder="NL00 BANK 0000 0000 00" autocomplete="off"></label>
+      <label>Ten name van<input name="name" value="${esc(state.household?.iban_name)}" placeholder="Naam op de rekening"></label>
+      <button>Opslaan</button></form></div>
+    <h2>Beheer: huis-Drive</h2><div class="card"><form data-form="drive">
+      <label>Link naar de gedeelde Google Drive-map<input name="url" value="${esc(state.household?.drive_url)}" placeholder="https://drive.google.com/drive/folders/…"></label>
+      <button>Opslaan</button></form></div>
+    <h2>Beheer: huisgenoten</h2><div class="card">${people}</div>`;
 }
 
 function viewIk() {
@@ -527,7 +775,8 @@ function viewIk() {
     ${state.me.is_admin ? adminPanel() : ''}`;
 }
 
-const VIEWS = { home: viewHome, afval: viewAfval, thuis: viewThuis, uit: viewUit, eten: viewEten, ik: viewIk };
+const VIEWS = { home: viewHome, afval: viewAfval, thuis: viewThuis, uit: viewUit, eten: viewEten, ik: viewIk,
+  was: viewWas, mededelingen: viewNews, albums: viewAlbums, boetes: viewFines, anytimers: viewAnytimers, act: viewAct };
 
 function render(skipIfBusy = false) {
   const onboarding = !state.me;
@@ -543,6 +792,7 @@ function render(skipIfBusy = false) {
   // Realtime-update mag typen of een open formulier niet onderbreken.
   if (skipIfBusy && (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || $('#view form details[open], #view details[open] form, #afvalruil form'))) return;
   $('#view').innerHTML = onboarding ? viewOnboarding() : (VIEWS[state.tab] || viewHome)();
+  hydratePhotos();
 }
 
 // ───────── Acties ─────────
@@ -555,7 +805,7 @@ async function ensureDinner(day) {
 }
 // "Uit" geldt voor vanavond en verloopt om 06:00 de volgende ochtend.
 const outUntil = () => { const d = new Date(); if (d.getHours() >= 6) d.setDate(d.getDate() + 1); d.setHours(6, 0, 0, 0); return d.toISOString(); };
-function setTab(tab) { state.tab = tab; history.replaceState(null, '', '#' + tab); render(); scrollTo(0, 0); }
+function setTab(tab) { state.tab = tab; history.replaceState(null, '', '#' + (tab === 'act' ? `act=${state.actId}` : tab)); render(); scrollTo(0, 0); }
 
 const actions = {
   tab(el) { setTab(el.dataset.tab); },
@@ -571,13 +821,57 @@ const actions = {
   },
   async joinout(el) {
     const o = state.members.find((m) => m.id === el.dataset.id);
-    if (await run(sb.from('members').update({ out_status: 'going', out_place: o.out_place, out_note: o.out_note, out_until: o.out_until || outUntil() }).eq('id', state.me.id), 'Top, je gaat mee')) notify('out');
+    if (await run(sb.from('members').update({ out_status: 'going', out_place: o?.out_place || null, out_time: o?.out_time || null, out_note: null, out_until: outUntil() }).eq('id', state.me.id), 'Top, je gaat mee')) notify('out');
   },
   async por(el) {
     const p = await run(sb.from('out_pokes').insert({ to_member: el.dataset.id }).select('id').single(), `${memberName(el.dataset.id)} gepord`);
     if (p) notify('por', { id: p.id });
   },
   pornee(el) { store.set('pornee', `${store.get('pornee') || ''} ${el.dataset.id}`.slice(-2000)); render(); },
+  outopen() { state.outOpen = !state.outOpen; render(); },
+  outno() { return run(sb.from('members').update({ out_status: 'no', out_place: null, out_time: null, out_note: null, out_until: outUntil() }).eq('id', state.me.id), 'Oké, je gaat niet mee'); },
+  openact(el) { state.actId = el.dataset.id; setTab('act'); },
+  async kok(el) {
+    const d = await ensureDinner(el.dataset.id); if (!d) return;
+    const cur = state.dinRsvps.find((x) => x.dinner_id === d.id && x.member_id === state.me.id);
+    if (await run(sb.from('dinner_rsvps').upsert({ dinner_id: d.id, answer: 'kok', guests: cur?.guests || 0 }, { onConflict: 'dinner_id,member_id' }), 'Top, jij kookt. Iedereen krijgt een melding.')) notify('kok', { day: el.dataset.id });
+  },
+  nokok(el) {
+    const d = state.dinners.find((x) => x.day === el.dataset.id);
+    return d && run(sb.from('dinner_rsvps').delete().eq('dinner_id', d.id).eq('member_id', state.me.id), 'Je kookt niet meer');
+  },
+  release(el) { return run(sb.from('laundry_slots').delete().eq('id', el.dataset.id), 'Dibs weggehaald'); },
+  afvalnee(el) { store.set('afvalnee', `${store.get('afvalnee') || ''} ${el.dataset.id}`.slice(-2000)); render(); },
+  delnews(el) { if (confirm('Mededeling verwijderen?')) return run(sb.from('announcements').delete().eq('id', el.dataset.id), 'Verwijderd'); },
+  vote(el) {
+    const cur = state.pollVotes.find((v) => v.option_id === el.dataset.id && v.member_id === state.me.id);
+    return cur?.answer === el.dataset.ans
+      ? run(sb.from('date_poll_votes').delete().eq('option_id', el.dataset.id).eq('member_id', state.me.id))
+      : run(sb.from('date_poll_votes').upsert({ option_id: el.dataset.id, answer: el.dataset.ans }, { onConflict: 'option_id,member_id' }));
+  },
+  pollclose(el) { if (confirm('Datumprikker sluiten?')) return run(sb.from('date_polls').update({ closed: true }).eq('id', el.dataset.id), 'Gesloten'); },
+  async pollact(el) {
+    const o = state.pollOptions.find((x) => x.id === el.dataset.id), p = state.polls.find((x) => x.id === o?.poll_id);
+    if (!o || !confirm(`${p.title} op ${dayLabel(o.day)} zetten?`)) return;
+    const a = await run(sb.from('activities').insert({ title: p.title, day: o.day, starts_at: o.time ? new Date(`${o.day}T${o.time}`).toISOString() : null }).select('id').single(), 'Activiteit gepland');
+    if (!a) return;
+    await run(sb.from('date_polls').update({ closed: true }).eq('id', p.id));
+    notify('activity', { id: a.id });
+  },
+  finepaid(el) { return run(sb.from('fines').update({ paid_at: new Date().toISOString() }).eq('id', el.dataset.id), 'Afgevinkt als betaald'); },
+  finedel(el) { if (confirm('Boete verwijderen?')) return run(sb.from('fines').delete().eq('id', el.dataset.id), 'Verwijderd'); },
+  async copy(el) { try { await navigator.clipboard.writeText(el.dataset.text); toast('Gekopieerd'); } catch { toast(el.dataset.text); } },
+  async anyact(el) {
+    const msg = { accept: 'Bevestigd', reject: 'Weggehaald', cancel: 'Ingetrokken', claim: 'Ingezet! Hij krijgt een melding.' }[el.dataset.ans];
+    if (await run(sb.rpc('anytimer_act', { p_id: el.dataset.id, p_action: el.dataset.ans }), msg) && el.dataset.ans === 'claim') notify('anytimer', { id: el.dataset.id });
+  },
+  openphoto(el) {
+    if (!el.src) return;
+    const box = Object.assign(document.createElement('div'), { className: 'lightbox' });
+    box.innerHTML = `<img src="${el.src}" alt="">`;
+    box.onclick = () => box.remove();
+    document.body.append(box);
+  },
   arsvp(el) { return run(sb.from('activity_rsvps').upsert({ activity_id: el.dataset.id, answer: el.dataset.ans }, { onConflict: 'activity_id,member_id' })); },
   delact(el) { if (confirm('Activiteit verwijderen?')) return run(sb.from('activities').delete().eq('id', el.dataset.id), 'Verwijderd'); },
   async drsvp(el) {
@@ -636,7 +930,7 @@ document.addEventListener('submit', async (e) => {
       const status = btn?.value || 'wants';
       const ok = await run(sb.from('members').update({
         out_status: status, out_place: status === 'none' ? null : v.place || null, out_note: status === 'none' ? null : v.note || null,
-        out_until: status === 'none' ? null : outUntil(),
+        out_time: status === 'none' ? null : v.time || null, out_until: status === 'none' ? null : outUntil(),
       }).eq('id', state.me.id), 'Status bijgewerkt');
       if (ok && status !== 'none') notify('out');
     } else if (kind === 'activity') {
@@ -644,10 +938,38 @@ document.addEventListener('submit', async (e) => {
       const a = await run(sb.from('activities').insert({ title: v.title, note: v.note || null, day, starts_at: day && v.time ? new Date(`${day}T${v.time}`).toISOString() : null }).select('id').single(), 'Toegevoegd');
       if (a) notify('activity', { id: a.id });
     } else if (kind === 'dinner') {
-      const day = f.dataset.day;
-      const old = state.dinners.find((x) => x.day === day);
-      const ok = await run(sb.from('dinners').upsert({ day, menu: v.menu || null, cook_id: v.cook || null }, { onConflict: 'household_id,day' }), 'Opgeslagen');
-      if (ok && v.menu && (v.menu !== old?.menu || (v.cook || null) !== (old?.cook_id || null))) notify('dinner', { day });
+      await run(sb.from('dinners').upsert({ day: f.dataset.day, menu: v.menu || null }, { onConflict: 'household_id,day' }), 'Menu opgeslagen');
+    } else if (kind === 'por') {
+      if (!v.to) return toast('Kies wie je wilt porren');
+      const p = await run(sb.from('out_pokes').insert({ to_member: v.to }).select('id').single(), `${memberName(v.to)} gepord`);
+      if (p) notify('por', { id: p.id });
+    } else if (kind === 'news') {
+      const n = await run(sb.from('announcements').insert({ body: v.body.trim() }).select('id').single(), 'Geplaatst');
+      if (n) notify('mededeling', { id: n.id });
+    } else if (kind === 'poll') {
+      const days = [0, 1, 2, 3].map((i) => ({ day: v['d' + i], time: v['t' + i] || null })).filter((x) => x.day);
+      if (!days.length) return toast('Kies minstens één datum');
+      const p = await run(sb.from('date_polls').insert({ title: v.title }).select('id').single());
+      if (!p) return;
+      await run(sb.from('date_poll_options').insert(days.map((x) => ({ poll_id: p.id, ...x }))), 'Datumprikker gemaakt');
+      notify('prikker', { id: p.id });
+    } else if (kind === 'fine') {
+      const fi = await run(sb.from('fines').insert({ member_id: v.member, amount: Number(String(v.amount).replace(',', '.')), reason: v.reason }).select('id').single(), 'Boete gegeven');
+      if (fi) notify('boete', { id: fi.id });
+    } else if (kind === 'was') {
+      const night = v.dur === 'night';
+      const start = new Date(`${v.day}T${night ? '23:00' : v.time || '00:00'}`);
+      const end = night ? new Date(`${addIso(v.day, 1)}T08:00`) : new Date(start.getTime() + Number(v.dur) * 60000);
+      const r = await sb.from('laundry_slots').insert({ machine: v.machine, starts_at: start.toISOString(), ends_at: end.toISOString() });
+      if (r.error) return toast(r.error.message.includes('row-level') ? 'Die tijd is al gedibst (of ligt in het verleden)' : r.error.message);
+      toast(`${machName(v.machine)} gedibst: ${hhmm(start)}–${hhmm(end)}`); await loadAll(); render();
+    } else if (kind === 'drive') {
+      await run(sb.rpc('set_house_drive', { p_url: v.url }), 'Drive-link opgeslagen');
+    } else if (kind === 'iban') {
+      await run(sb.rpc('set_house_iban', { p_iban: v.iban, p_name: v.name }), 'Huisrekening opgeslagen');
+    } else if (kind === 'anytimer') {
+      const a = await run(sb.from('anytimers').insert({ debtor: v.debtor, reason: v.reason || null }).select('id').single(), 'Verstuurd, wacht op bevestiging');
+      if (a) notify('anytimer', { id: a.id });
     } else if (kind === 'room') {
       await run(sb.rpc('set_room', { p_room: Number(v.room) }), `Kamer ${v.room} opgeslagen`);
     } else if (kind === 'afvalruil') {
@@ -655,6 +977,13 @@ document.addEventListener('submit', async (e) => {
       if (id) notify('afvalruil', { id });
     }
   } finally { if (btn?.isConnected) btn.disabled = false; }
+});
+
+document.addEventListener('change', (e) => {
+  const inp = e.target.closest('input[type=file][data-photo]'); if (!inp?.files?.length) return;
+  const files = [...inp.files]; inp.value = '';
+  if (inp.dataset.photo === 'pov') addPov(inp.dataset.id, files);
+  else anytimerProof(inp.dataset.id, files[0]);
 });
 
 // ───────── Start ─────────

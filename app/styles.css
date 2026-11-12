@@ -166,3 +166,45 @@ code{display:block;margin:4px 0 8px;padding:8px 10px;border-radius:var(--r-sm);b
 
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 .agday{margin-bottom:10px;font:600 14px/1.2 var(--display);letter-spacing:.03em;color:var(--amber)}
+
+/* ───────── Wensenlijst: uitgaan, agenda, prikker, was, boetes, anytimers, foto's ───────── */
+.tiles.minis{grid-template-columns:repeat(3,1fr)}
+.tile.mini{min-height:92px;padding:12px}
+.tile.mini .v{font-size:24px;margin-top:8px}
+.tile.mini .v small{font-size:13px;margin-left:4px}
+.tile.mini .m{font-size:13px}
+.outsum,.actrow{display:flex;align-items:center;gap:12px;width:100%;padding:6px 0;background:none;box-shadow:none;text-align:left;border-radius:0}
+.outsum b,.actrow b{display:block;font:600 17px/1.25 var(--display)}
+.outsum small,.actrow small{display:block;margin-top:2px;font-size:13px;color:var(--ink-2)}
+.actrow+.actrow{box-shadow:0 -1px 0 var(--line)}
+.actrow>svg{flex:none;color:var(--ink-3)}
+.outdetail{margin-top:10px;padding-top:6px;box-shadow:0 -1px 0 var(--line)}
+.pollrow{display:flex;align-items:center;gap:10px;padding:8px 0;flex-wrap:wrap}
+.pollrow+.pollrow{box-shadow:0 -1px 0 var(--line)}
+.seg{display:flex;gap:4px}
+.seg button{min-width:44px;padding:8px 10px}
+.stack.wrap{flex-wrap:wrap;gap:6px}
+.stack.wrap .av{margin-left:0;box-shadow:none}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 3px;border-radius:99px;background:rgba(244,235,221,.08);font-size:13px}
+.grp+.grp{margin-top:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 14px;border-radius:var(--r-sm);cursor:pointer;font-weight:600}
+.btn.primary{background:var(--ink);color:var(--lak-4)}
+.photos{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.photos img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:var(--r-sm);background:rgba(244,235,221,.08);cursor:zoom-in}
+.lightbox{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:16px;background:rgba(10,2,5,.92)}
+.lightbox img{max-width:100%;max-height:100%;border-radius:var(--r-sm)}
+.album{display:block;width:100%;text-align:left}
+.mach{min-height:150px;gap:8px}
+.mach .v{font-size:24px}
+.mach.mine{background:var(--gloss-hi),var(--lak-6)}
+.mach .row{margin-top:auto}
+.mach button{padding:8px 10px}
+.paybox{display:grid;gap:10px;margin:12px 0;padding:12px;border-radius:var(--r-sm);background:rgba(10,2,5,.35)}
+.paybox div{display:grid}
+.paybox b{font:600 17px/1.3 var(--display);word-break:break-all}
+.newsbody{white-space:pre-wrap;margin:10px 0 4px}
+b.big{font:700 24px/1.15 var(--display)}
+.amberText{color:var(--amber)}
+textarea{font:inherit;resize:vertical}
+.drivebtn{width:100%;margin-bottom:6px}
+.btn{text-decoration:none}
